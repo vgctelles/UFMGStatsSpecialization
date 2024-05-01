@@ -1,0 +1,831 @@
+---
+title: "Método para estimativa do valor do frete, em dados de um marketplace brasileiro"
+author: "Victor Telles; Felipe Carmo; Leandro Barros"
+date: "2023-10-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r dados1, include=FALSE, echo=FALSE}
+require(car) # pacote car - para analise de colinearidade entre variavies 
+require(rgl) # pacote rgl
+require(leaps) # 
+require(lmtest) # pacote lmtest
+require(olsrr) # pacote olsrr - para analise de dados Outliers
+require(dplyr)
+require(ggplot2)
+require(lubridate)
+require(geosphere)
+library(tidyverse)
+require(corrplot)
+require(nortest)
+
+```
+```{r programa, echo=FALSE}
+setwd("/Users/victortelles/Documents/Coursera/Especializacao - UFMG/01 - Analise Exploratoria de Dados/Trabalho/Dados")
+#dfReview <- read.csv("olist_order_reviews_dataset.csv", sep = ",", header = TRUE)
+dfOrder <- read.csv("olist_orders_dataset.csv", sep = ",", header = TRUE)
+dfOrderItems <- read.csv("olist_order_items_dataset.csv", sep = ",", header = TRUE)
+dfProduct <- read.csv("olist_products_dataset.csv", sep = ",", header = TRUE)
+dfSeller <- read.csv("olist_sellers_dataset.csv", sep =",", header = TRUE)
+dfCustomer <- read.csv("olist_customers_dataset.csv", sep =",", header = TRUE)
+dfGeo <- read.csv("olist_geolocation_dataset.csv", sep = ",", header = TRUE)
+dfPay <- read.csv("olist_order_payments_dataset.csv", sep = ",", header = TRUE)
+
+# Agregacao do OrderItems - Max(qty Items), Sum(price), sum (freight_value) - por seller, order_id e product_id
+dfOrdersItemsAdj <- dfOrderItems %>% 
+  group_by(seller_id, order_id, product_id) %>%                  
+  summarise(qty_product = max(order_item_id), total_price = sum(price), total_freight = sum(freight_value)) 
+
+#Agregacao do dfGeo - pegando a media do X e Y 
+dfGeoAdj <- dfGeo %>% 
+  group_by(geolocation_zip_code_prefix, geolocation_state) %>%
+  summarise(across(-geolocation_city, mean, na.rm = TRUE))
+
+#Agregacao do dfGeo - pegando a media do X e Y 
+dfPayAdj <- dfPay %>% 
+  filter(payment_type == "voucher")
+  
+## Inicio do cruzamento de bases
+df1 <- merge(dfOrdersItemsAdj, dfSeller, by.x = "seller_id", by.y = "seller_id")
+df1 <- merge(df1, dfProduct, by.x = "product_id", by.y = "product_id")
+df2Aux <- merge(dfOrder, dfCustomer, by.x = "customer_id", by.y = "customer_id")
+df1 <- merge(df1, dfGeoAdj, by.x = "seller_zip_code_prefix", by.y = "geolocation_zip_code_prefix")
+df1 <- subset(df1, select = -geolocation_state)
+colnames(df1)[18] <- "seller_geolocation_lat"
+colnames(df1)[19] <- "seller_geolocation_long"
+
+dfPayAdj <- dfPayAdj %>% distinct(order_id, .keep_all = TRUE)
+df2Aux <- df2Aux %>% distinct(order_id, .keep_all = TRUE)
+df2 <- df2Aux %>% anti_join( dfPayAdj, by='order_id')
+
+df2 <- merge(df2, dfGeoAdj, by.x = "customer_zip_code_prefix", by.y = "geolocation_zip_code_prefix")
+df2 <- subset(df2, select = -geolocation_state)
+colnames(df2)[13] <- "customer_geolocation_lat"
+colnames(df2)[14] <- "customer_geolocation_long"
+
+df <- merge(df2, df1, by.x = "order_id", by.y = "order_id", x.all = TRUE)
+
+#remocao de variaveis
+df <- subset(df, select = -product_name_lenght) 
+df <- subset(df, select = -product_description_lenght)
+df <- subset(df, select = -product_photos_qty)
+df <- subset(df, select = -seller_zip_code_prefix)
+df <- subset(df, select = -customer_zip_code_prefix)
+ 
+#Filtro de pedidos com status entregue
+dfDelivered <- subset(df, order_status == "delivered")
+
+#criacao de variaveis de tempo
+dfDelivered$dataPedido <- strptime(dfDelivered$order_purchase_timestamp, "%Y-%m-%d %H:%M:%OS")
+dfDelivered$dataAprovacao <- strptime(dfDelivered$order_approved_at, "%Y-%m-%d %H:%M:%OS")
+dfDelivered$dataTransporte <- strptime(dfDelivered$order_delivered_carrier_date, "%Y-%m-%d %H:%M:%OS")
+dfDelivered$dataEntrega <- strptime(dfDelivered$order_delivered_customer_date, "%Y-%m-%d %H:%M:%OS")
+dfDelivered$dataEstimada <- strptime(dfDelivered$order_estimated_delivery_date, "%Y-%m-%d %H:%M:%OS")
+
+dfDelivered$tempoEntrega <- difftime(dfDelivered$dataEntrega, dfDelivered$dataPedido, "UTC", units = "days")
+#remocao de variaveis
+dfDelivered <- subset(dfDelivered, select = -order_purchase_timestamp) 
+dfDelivered <- subset(dfDelivered, select = -order_approved_at)
+dfDelivered <- subset(dfDelivered, select = -order_delivered_carrier_date)
+dfDelivered <- subset(dfDelivered, select = -order_delivered_customer_date)
+dfDelivered <- subset(dfDelivered, select = -order_estimated_delivery_date)
+
+#criacao de variveis de distancia
+dfDelivered <- dfDelivered %>%
+  mutate(
+    dist = geosphere::distHaversine(cbind(seller_geolocation_long, seller_geolocation_lat), cbind(customer_geolocation_long, customer_geolocation_lat))
+  )
+
+#remocao de variaveis 
+dfDelivered <- subset(dfDelivered, select = -seller_geolocation_long)
+dfDelivered <- subset(dfDelivered, select = -seller_geolocation_lat)
+dfDelivered <- subset(dfDelivered, select = -customer_geolocation_long)
+dfDelivered <- subset(dfDelivered, select = -customer_geolocation_lat)
+
+
+#dfFinal <- subset(dfFinal, select = -customer_state)
+#dfFinal <- subset(dfFinal, select = -customer_city)
+#dfFinal <- subset(dfFinal, select = -seller_state)
+#dfFinal <- subset(dfFinal, select = -seller_city)
+dfFinal <- subset(dfDelivered, select = -customer_id)
+dfFinal <- subset(dfFinal, select = -order_status)
+dfFinal <- subset(dfFinal, select = -order_id)
+dfFinal <- subset(dfFinal, select = -product_id)
+dfFinal <- subset(dfFinal, select = -seller_id)
+
+#criando novas variaveis
+dfFinal$volume <- dfFinal$product_length_cm * dfFinal$product_height_cm * dfFinal$product_width_cm 
+dfFinal$tempoEntregaNum <- as.numeric(dfFinal$tempoEntrega)
+
+#removendo variaveis não numericas
+dfNum <- subset(dfFinal, select = -dataAprovacao)
+dfNum <- subset(dfNum, select = -dataTransporte)
+dfNum <- subset(dfNum, select = -tempoEntrega)
+dfNum <- subset(dfNum, select = -dataEntrega)
+dfNum <- subset(dfNum, select = -customer_unique_id)
+#dfNum <- subset(dfNum, select = -product_category_name)
+#dfNum <- subset(dfNum, select = -dataPedido)
+#dfNum <- subset(dfNum, select = -dataEstimada)
+
+#novas features - categoricas
+dfNum$mes_pedido <- month(dfNum$dataPedido)
+dfNum$mes_estima_entrega <- month(dfNum$dataEstimada)
+
+
+dfNum$periodo_mes_pedido <- ifelse(day(dfNum$dataPedido) <= 5, "inicio do mês", ifelse(day(dfNum$dataPedido) <= 23, "meio do mês", "fim do mês")) 
+dfNum$periodo_mes_estima_entrega <- ifelse(day(dfNum$dataEstimada) <= 5, "inicio do mês", ifelse(day(dfNum$dataEstimada) <= 23, "meio do mês", "fim do mês")) 
+
+dfNum$periodo_ano_pedido <- ifelse(dfNum$mes_pedido <= 3, "1 Tri", ifelse(dfNum$mes_pedido <= 6, "2 Tri", ifelse(dfNum$mes_pedido <= 9, "3 Tri", "4 Tri"))) 
+dfNum$periodo_ano_estima_entrega <- ifelse(dfNum$mes_estima_entrega <= 3, "1 Tri", ifelse(dfNum$mes_estima_entrega <= 6, "2 Tri", ifelse(dfNum$mes_estima_entrega <= 9, "3 Tri", "4 Tri"))) 
+
+dfNum$diaSemana_pedido <- wday(dfNum$dataPedido)
+dfNum$TipoDiaSemana_pedido <- ifelse(dfNum$diaSemana_pedido == 1 | dfNum$diaSemana_pedido == 7, "fim de semana", "dia util")
+
+#reorganizaçao do df
+dfNum <- subset(dfNum, select = c(1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 3))  
+
+#Remove os NA - Observados em Volume, Peso, Distancia e Tempo de Entrega
+dfNum <- dfNum %>% drop_na() #24 Observacoes com algum dado importante faltante - nao afetando em 99778 observacoes totais
+
+#Remove valores de Frete menores que R$5,00 - Distancias maiores que as possiveis no brasil - pesos maiores que 0
+dfNum <- dfNum %>% 
+  filter(total_freight >= 5)
+
+dfNum <- dfNum %>% 
+  filter(dist > 0 & dist <= 4394000)
+
+dfNum <- dfNum %>% 
+  filter(product_weight_g > 0)
+```
+
+# Resumo
+
+O comércio eletrônico no Brasil experimentou um crescimento significativo nas últimas décadas, tornando-se uma parte essencial do cenário de varejo do país. Com uma população numericamente grande e uma economia em crescimento, o Brasil viu um aumento notável nas transações de comércio eletrônico. Milhões de brasileiros agora preferem fazer compras online, aproveitando a conveniência de encontrar uma ampla variedade de produtos e serviços sem sair de casa. Plataformas de comércio eletrônico e marketplaces desempenham um papel fundamental nesse ecossistema, conectando consumidores a uma vasta gama de vendedores e produtos. 
+
+Apesar dos desafios logísticos e de infraestrutura, o comércio eletrônico no Brasil continua a atrair investimentos e inovações. A base de dados "Brazilian E-Commerce Public Dataset by Olist" oferece insights valiosos sobre as transações e comportamento dos consumidores nesse mercado em constante evolução, permitindo análises detalhadas e tomada de decisões informadas. 
+
+A fim de entender melhor o comportamento do comércio eletrônico, o trabalho contempla análise com métodos estatísticos explicados na disciplina Regressão Linear, tais como análise descritiva de dados, análise de multicolineareida, entendimentos de valores influentes, verificação de parâmetros da tabela ANOVA, aplicação de teste de hipoteses como Kolmogorov-Smirnov, Breush-Pagan e seleção de modelos, na base de dados da Olist a fim de entender como se relaciona o preço do frete em decorrência de variáveis como tamanho e peso do produto entregue, distância entre compradores e vendedores, data da entrega, dentre outras. 
+
+# Introdução
+
+A análise preditiva desempenha um papel crucial na gestão eficaz das operações de comércio eletrônico, especialmente no que diz respeito ao cálculo de frete. A fim de entender melhor o comércio eletrônico brasileiro, foi encontrada a  base de dados "Brazilian E-Commerce Public Dataset by Olist" que permite explorar e entender as complexas variáveis que influenciam o custo de frete no contexto do comércio eletrônico no Brasil. 
+
+Sendo o frete é um dos principais fatores que impactam a experiência do cliente e os custos operacionais das empresas de comércio eletrônico. Torna-se aprazível buscar calcular da maneira objetiva o custo do frete envolvendo várias variáveis interconectadas, como a quantidade de produtos entregues, o valor do pedido do produto, o volume do pedido, a distância da entrega, a quantidade de dias para entregar o produto e o peso do produto. 
+
+Nesse cenário complexo, a regressão linear surge como uma ferramenta para prever os custos de frete com base nessas variáveis. Através da análise preditiva, podemos tentar explorar as relações entre essas variáveis e os custos de frete, identificando tendências e padrões que podem ajudar a tomada de decisões mais clarividentes. 
+
+Através da análise de dados da base: "Brazilian E-Commerce Public Dataset by Olist", é possível entender e justificar a aplicação da análise preditiva por regressão linear a fim de estimar os custos de frete no contexto do comércio eletrônico brasileiro. Com essas estimativas pretende-se fornecer insights valiosos que buscam otimizar processos logísticos, melhorando a satisfação do cliente para que haja a tomada de decisões estratégicas baseadas em dados sólidos. 
+
+Durante o curso deste trabalho, iremos analisar cuidadosamente as variáveis disponíveis na base de dados, construir modelos de regressão linear e avaliar sua eficácia na previsão dos custos de frete. Além disso, discutiremos como essa análise pode contribuir para a redução de custos operacionais e a otimização das operações de entrega. 
+
+# Materiais e Métodos
+## Desenho do Estudo
+Neste capítulo, detalharemos os materiais e métodos utilizados para desenvolver e analisar nosso modelo de regressão linear múltipla. O objetivo deste estudo é investigar as variáveis que influenciam o valor do frete a ser pago em um e-commerce brasileiro, considerando dados de pedidos realizados entre 2016 e 2018, com uma amostra de cerca de 100.000 pedidos. 
+
+## Coleta de Dados
+### Fonte de Dados 
+Os dados para este estudo foram obtidos do banco de dados de um market place brasileiro, que registra informações detalhadas sobre pedidos realizados entre 2016 e 2018, e disponibilizado na plataforma kaggle para fins de análise pública, através do link:https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce. A fonte de dados foi selecionada devido à sua relevância, para os autores, por se tratar de um problema real, próximo da realidade profissional vivenciadas por eles, devido ao tamanho da base de dados, além de relevante para comunidade ter o entendimento dos fatores que afetam o valor do frete em transações online e uma projeção do quanto pagaria. 
+
+
+![Figura 1: Esquemático relacional entre as bases de dados utilizada. Disponível em: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce](/Users/victortelles/Documents/Coursera/Especializacao - UFMG/04 - Modelagem de relacoes usando Regressao Linear/Trabalho/HRhd2Y0.png)
+
+Descrição das bases de dados quem compõem o sistema da Figura 1: 
+
+- Pedidos (Orders): Informações sobre os pedidos feitos pelos clientes, incluindo data do pedido, identificação do pedido, status do pedido e identificação do cliente. 
+- Itens de Pedido (Order Items): Detalhes sobre os itens individuais dentro de cada pedido, incluindo identificação do produto, preço, quantidade, e o valor total do item. 
+- Produtos (Products): Informações sobre os produtos disponíveis para compra, incluindo nome do produto, categoria, preço e peso. 
+- Clientes (Customers): Dados sobre os clientes que fizeram os pedidos, incluindo identificação do cliente, nome, cidade e estado. 
+- Pagamentos (Payments): Detalhes sobre os pagamentos associados a cada pedido, incluindo método de pagamento, valor do pagamento e parcelamento, quando aplicável. 
+- Vendedores (Sellers): Informações sobre os vendedores que forneceram os produtos, incluindo identificação do vendedor, nome, cidade e estado. 
+- Avaliações (Reviews): Avaliações e classificações dadas pelos clientes aos produtos e ao serviço de entrega. 
+- Geolocalização (Geolocation): Dados de geolocalização que relacionam códigos postais às regiões geográficas no Brasil. 
+- Categorias de Produtos (Product Categories): Informações sobre as categorias às quais os produtos pertencem. 
+
+### Amostragem
+Foram utilizados todos os pedidos observados no banco de dados, desde que tivesse sido "entregue", não possuisse variáveis nulas ao fazer as combinações com as demais bases de dados, o peso do produto fosse maior que zero, o volume do produto fosse maior que zero, a distância entre vendedor e comprador fosse maior que zero e menor que a maior distancia em linha reta do Brasil (4.394 km), pedido que cujo pagamento não tivesse utilização de voucher. Com aplicação de todas estas restrições foram obtidas 94.995 observações para compor o modelo.
+
+### Variáveis
+As variáveis utilizadas neste estudo incluem: 
+
+Variável Dependente (Y): Valor do Frete - Esta é a variável que pretendemos prever com base nas variáveis independentes. 
+
+Variáveis Independentes (X1, X2, X3, ...): As variáveis explicativas incluem: 
+- Caracteristicas do Pedido (por exemplo, valor total, quantidade de itens)
+
+- Características do Produto (Peso, volume). 
+
+- Características do Cliente (por exemplo, cep, latitude e longitude). 
+
+- Características do Vendedor (por exemplo, cidade, localização). 
+
+- Distância entre CEPs do Cliente e do Vendedor. 
+
+- Características de tempo (por exemplo, dia da semana da compra, época do ano). 
+
+## Modelagem Estatística
+### Modelo de Regressão Linear Múltipla
+
+Para realizar a análise, utilizamos um modelo de regressão linear múltipla. buscando encontrar uma equação para o modelo como a seguinte:
+Frete = β0 + β1X1 + β2X2 + ... + βnXn + ε 
+
+Onde: 
+
+Frete é o valor do frete. 
+
+- X1 ,X2 ,…,Xn  representam as variáveis explicativas mencionadas anteriormente. 
+- β0  é o intercepto. 
+- β1 ,β2 ,…,βn  são os coeficientes de regressão das variáveis independentes. 
+- ε é o termo de erro
+
+Neste estudo, foi aplicado o método stepwise para seleção de variáveis no modelo. O método stepwise nos permitiu avaliar e selecionar automaticamente as variáveis independentes mais relevantes com base em critérios estatísticos, incluindo o critério BIC (Bayesian Information Criterion). O critério BIC é particularmente útil, pois considera tanto a qualidade de ajuste do modelo quanto a complexidade, ajudando a evitar a inclusão de variáveis desnecessárias e, assim, melhorar a generalização do modelo.
+
+Além disso, foi conduzida uma análise de multicolinearidade entre as variáveis independentes. A multicolinearidade ocorre quando duas ou mais variáveis independentes estão altamente correlacionadas, o que pode prejudicar a interpretação dos coeficientes e a estabilidade do modelo. Durante a análise, identificamos e tratamos a multicolinearidade, quando necessário, para garantir que as variáveis independentes fossem independentes umas das outras.
+
+Adicionalmente, foi realizada uma análise de interação entre variáveis do tipo categóricas (como período do ano da entrega) e variáveis numéricas (Distância entre CEPs). Isso nos permitiu explorar se as relações entre essas variáveis eram afetadas por fatores adicionais, como o tipo de cliente ou a distância geográfica. A inclusão de termos de interação no modelo nos ajudou a capturar essas complexas relações.
+
+Esta abordagem abrangente de seleção de variáveis, análise de multicolinearidade e consideração de interações entre variáveis contribuiu para a construção de um modelo de regressão linear múltipla mais preciso e interpretável, permitindo uma análise mais aprofundada dos determinantes do valor do frete em nosso e-commerce brasileiro.
+
+### Pré-processamento de Dados
+Antes de ajustar o modelo de regressão linear múltipla, realizamos um rigoroso pré-processamento dos dados para garantir a qualidade e a integridade das informações.
+
+- Tratamento de Dados Ausentes: Inicialmente, identificamos e tratamos dados ausentes em todas as variáveis. Isso envolveu a remoção de observações com valores ausentes ou preenchimento desses valores com técnicas apropriadas, como média ou mediana, quando aplicável.
+
+- Cálculo da Distância entre CEPs: Para incorporar a distância entre o vendedor e o comprador como uma variável independente no modelo, calculamos a distância geodésica entre dois pontos globais usando suas coordenadas de latitude e longitude. Isso nos permitiu quantificar a distância física entre o vendedor e o comprador para análise.
+
+- Agregação de Bases de Dados:
+
+-  Geolocalização: Para incorporar informações geográficas relevantes, agregamos a base de dados de Geolocalização, calculando a latitude e a longitude média de cada CEP. Isso nos forneceu coordenadas geográficas mais precisas para análise.
+-  OrdersItems: Agregamos a base de dados OrdersItems somando a quantidade de itens por pedido. Isso nos permitiu considerar o volume total de itens em cada pedido como uma variável independente no modelo.
+
+O pré-processamento de dados foi uma etapa crítica para garantir que os dados fossem adequados para a modelagem de regressão e que as informações importantes fossem devidamente incorporadas. Essas transformações e agregações forneceram uma base sólida para a análise estatística e a construção do modelo de regressão linear múltipla.
+
+
+### Software e Pacotes
+Para conduzir a análise estatística e a construção do modelo de regressão linear múltipla, utilizamos a linguagem de programação R juntamente com o ambiente de desenvolvimento integrado RStudio. Essas ferramentas forneceram uma plataforma robusta para a análise de dados e modelagem estatística.
+
+Além disso, foram empregados diversos pacotes de R para realizar tarefas específicas, incluindo, mas não se limitando a:
+
+- car: Utilizado para realizar testes de multicolinearidade, bem como outras análises estatísticas.
+- rgl: Usado para visualizações tridimensionais, quando necessário.
+- leaps: Utilizado para realizar a seleção de variáveis com base em critérios como BIC, parte do método stepwise.
+- lmtest: Possibilitou a realização de testes de hipóteses relacionados ao modelo de regressão linear múltipla.
+- olsrr: Forneceu uma série de funções úteis para a análise de regressão, incluindo diagnósticos de resíduos e medidas de ajuste do modelo.
+- dplyr: Facilitou a manipulação e transformação eficiente de dados.
+- ggplot2: Utilizado para criar visualizações gráficas de alta qualidade.
+- lubridate: Auxiliou no trabalho com datas e horários, como a análise de época do ano.
+- geosphere: Usado para calcular distâncias geodésicas entre coordenadas de latitude e longitude.
+- tidyverse: Uma coleção abrangente de pacotes para manipulação de dados, visualização e modelagem estatística.
+- corrplot: Utilizado para criar gráficos de matriz de correlação.
+- nortest: Usado para realizar testes de normalidade nos resíduos do modelo.
+
+Esses pacotes desempenharam papéis cruciais ao longo da análise, desde a exploração inicial dos dados até a construção e avaliação do modelo de regressão linear múltipla. A escolha dessas ferramentas e pacotes específicos contribuiu para uma análise eficiente e completa dos dados do e-commerce brasileiro.
+
+# Análises e Resultados
+## Análise Exploratória de Dados
+Nesta seção, foi feita uma análise exploratória das variáveis numéricas que compõem o conjunto de dados. Essa etapa é fundamental para compreender a distribuição das variáveis e suas relações com a variável resposta, o valor do frete.
+
+### Variável qty_product
+- Medidas de Posição: A média da quantidade de produtos (qty_product) foi de 1,148, com um desvio padrão de 0,56, baixa dispersão dos dados.
+```{r chunk1, echo=T}
+summary(dfNum$qty_product) #Medidas de Posicao #Q3 - Em um produto
+sd(dfNum$qty_product)   
+```
+- Histograma: O histograma da variável qty_product mostra uma distribuição assimétrica com forte cauda à diteira, evidenciando que a maioria dos pedidos envolve menos de 3 ítens.
+```{r chunk2, echo=TRUE}
+hist(dfNum$qty_product)    #Histograma - Observa-se que a imensa maioria dos pedidos tem um produto apenas
+```
+- Box Plot: O box plot revela a presença de alguns outlier, mas reforça a esmagadora concentração nos pedidos com baixa quantidade de produtos.
+```{r chunk3, echo=T}
+boxplot(dfNum$qty_product) #Box-plot - ratifica o ponto acima
+```
+- Correlação de Pearson: A correlação de Pearson foi de 0,35, indicando uma correçação positiva fraca entra as variáveis (frete e quantidade de produtos)
+```{r chunk4, echo=T}
+with(dfNum, cor(qty_product, total_freight, method="pearson")) #[1] 0.3500383
+```
+
+### Variável total_price
+- Medidas de Posição: O valor médio total_price foi de 133,46 reais, com um desvio padrão de 206,1 reais
+```{r chunk5, echo=T}
+summary(dfNum$total_price) #Medidas de Posicao - Existe valores de pedidos muito alto - 13400 reais - uma observacao - valor quase o dobro da segunda maior
+sd(dfNum$total_price)      #Desvio-padrao [1] 203.787
+```
+- Histograma: O histograma da variável total_price mostra uma distribuição assimétrica com forte cauda à diteira, evidenciando que a maioria dos pedidos envolve menos de 1000 reais.
+```{r chunk6, echo=T}
+hist(dfNum$total_price)    #Histograma
+```
+- Box Plot: : box plot revela a presença de alguns outlier, mas reforça a esmagadora concentração nos pedidos de até 1000 reais.
+```{r chunk7, echo=T}
+boxplot(dfNum$total_price) #Box-plot  
+```
+- Correlação de Pearson: A correlação de Pearson entre total_price e total_freight foi de 0,41, indicando correlção positiva moderada.
+```{r chunk8, echo=T}
+with(dfNum, cor(total_price, total_freight, method="pearson")) #[1] 0.4074545  
+```
+
+### Variável volume
+- Medidas de Posição: O valor médio do volume foi de 15.190 centimetros cubico (cm3), com um desvio padrão de 23.355,12 cm3, indicando alta dispersão dos dados.
+```{r chunk9, echo=T}
+summary(dfNum$volume) #Medidas de Posicao
+sd(dfNum$volume)      #Desvio-padrao [1] 23267.38 - alta dispersao
+```
+- Histograma: O histograma da variável volume indica [apresenta formato assimétrico com forte cauda à direita, com contratação de pedidos com volume até 50.000 cm3.
+```{r chunk10, echo=T}
+hist(dfNum$volume)    #Histograma     
+```
+- Box Plot: O box plot mostra presença de outilier, mas dados bem concentrados em pedidos até 50.000 cm3.
+```{r chunk11, echo=T}
+boxplot(dfNum$volume) #Box-plot 
+```
+- Correlação de Pearson: A correlação de Pearson entre volume e total_freight foi de 0,49, inficando correção moderada entre as variáveis. Uma das correlações mais altas encontradas neste estudo.
+```{r chunk12, echo=T}
+with(dfNum, cor(volume, total_freight, method="pearson")) #0.4998182
+```
+
+### Variável dist (distância entre CEPs)
+- Medidas de Posição: A média da distância entre CEPs foi de 434.215 metros ou 434,2 km, com um desvio padrão de  59.1850,6 m.
+```{r chunk13, echo=T}
+summary(dfNum$dist) #Medidas de Posicao 
+sd(dfNum$dist)      #Desvio-padrao [1] 592318.2 - alta dispersao
+```
+- Histograma: O histograma da variável dist se mostra assimétrico com cauda à direita.
+```{r chunk14, echo=T}
+hist(dfNum$dist)    #Histograma 
+```
+- Box Plot: O box plot mostra presença de alguns outliers, mas com p75 abaixo de 1.000. km
+```{r chunk15, echo=T}
+boxplot(dfNum$dist) #Box-plot - cerca de 4 observacoes muito distantes - mais de 8mil km de distancia - muito superior a distancia do brasil - Excluir observacoes
+```
+- Correlação de Pearson: A correlação de Pearson entre dist e total_freight foi de 0,32, indicando correlação fraca entre as variáveis.
+```{r chunk16, echo=T}
+with(dfNum, cor(dist, total_freight, method="pearson")) #0.3259257
+```
+
+### Variável tempoEntregaNum (tempo de entrega em dias)
+- Medidas de Posição: O valor médio do tempoEntregaNum foi de 10.17 dias, com um desvio padrão de 9.52 dias.
+```{r chunk17, echo=T}
+summary(dfNum$tempoEntregaNum) #Medidas de Posicao #Atencao para casos com mais de 120 dias de tempo de entrega - o estimado é 50 dias 
+sd(dfNum$tempoEntregaNum)      #Desvio-padrao [1] 9.524263
+```
+- Histograma: O histograma da variável tempoEntregaNum se mostra assimétrico com cauda à direita, com concentratação de valor em até 50 dias.
+```{r chunk18, echo=T}
+hist(dfNum$tempoEntregaNum)    #Histograma
+```
+- Box Plot: O box plot apresena alguns outliers com p75 com tempo inferior a ~20.
+```{r chunk19, echo=T}
+boxplot(dfNum$tempoEntregaNum) #Box-plot
+```
+- Correlação de Pearson: A correlação de Pearson entre tempoEntregaNum e total_freight foi de 0,17, indicando correlação bem fraca entre as variáveis, a mais fraca encontrada.
+```{r chunk20, echo=T}
+with(dfNum, cor(tempoEntregaNum, total_freight, method="pearson"))
+```
+
+### Variável product_weight_g (peso do produto em gramas)
+- Medidas de Posição: O valor médio do product_weight_g foi de 700g, com um desvio padrão de  3754.12 g, indicando alta dispersão dos dados.
+```{r chunk21, echo=T}
+summary(dfNum$product_weight_g) #Medidas de Posicao
+sd(dfNum$product_weight_g)     
+```
+- Histograma: O histograma da variável product_weight_g tem forma assimétrica com cauda à direita.
+```{r chunk22, echo=T}
+hist(dfNum$product_weight_g)    #Histograma - concentracao alta em produtos com ate 2kgs
+```
+- Box Plot: O box plot indica a presença clara de outlier no valor de peso ~30 kg e outros.
+```{r chunk23, echo=T}
+boxplot(dfNum$product_weight_g) #Box-plot existe um produto com mais de 40kg - atencao - produtos com 0 e 2g - estes tem erro na coleta de dados
+```
+- Correlação de Pearson:  correlação de Pearson entre product_weight_g e total_freight foi de 0,52, indicado correlação moderada entre os dados, sendo a correlação de pearson mais alta.
+```{r chunk24, echo=T}
+with(dfNum, cor(product_weight_g, total_freight, method="pearson")) #0.5219245 
+```
+
+### Variável total_freight (Variável Resposta)
+- Medidas de Posição: A média do valor do frete (total_freight) foi de [valor médio], com um desvio padrão de [valor do desvio padrão].
+```{r chunk25, echo=T}
+summary(dfNum$total_freight)
+sd(dfNum$total_freight) 
+```
+- Histograma: O histograma da variável total_freight [descrever a forma da distribuição].
+```{r chunk26, echo=T}
+hist(dfNum$total_freight) 
+```
+- Box Plot: O box plot [indicar se há outliers ou assimetria na distribuição].
+```{r chunk27, echo=T}
+boxplot(dfNum$total_freight)
+```
+
+### Correlação de Pearson entre Variáveis Explicativas e a Variável Resposta
+Realizamos análises de correlação de Pearson individual entre cada uma das variáveis explicativas (qty_product, total_price, volume, dist, tempoEntregaNum, product_weight_g) e a variável resposta (total_freight). As correlações variaram de 0.178 a 0.522 e apresentaram correlações fracas ou moderadas com direção positiva, em todas as variaveis numericas testadas.
+
+Essa análise exploratória de dados nos forneceu uma compreensão inicial das distribuições das variáveis, identificou possíveis outliers e nos permitiu avaliar a correlação entre as variáveis explicativas e a variável resposta, o que será fundamental para a construção e interpretação do modelo de regressão linear múltipla.
+
+### Análise de Interação entre Variáveis
+
+Para investigar a possível interação entre as variáveis dist, total_price, volume e o fator periodo_ano_estima_entrega, realizamos uma análise de interação. Isso nos permitiu examinar se o efeito de uma variável numérica no valor do frete é modificado ou dependente do nível do fator de período do ano estimado de entrega.
+
+- Primeiro, examinamos a interação entre a distância entre CEPs (variável dist) e o fator periodo_ano_estima_entrega. Para isso, criamos gráficos de dispersão separados para cada nível do fator de período e colorimos os pontos de acordo com a distância entre CEPs. Isso nos permitiu visualizar se a relação entre a distância e o valor do frete variava entre os períodos do ano estimado de entrega. Neste gráfico vê-se as linhas que representam os trimestres todas sobrepostas, concluindo então que não há interação entre as variáveis dist (distancia entre cep do comprador e vendedor) e a epoca do ano que se estima entregar o produto.
+
+```{r chunk111, echo=T}
+ggplot(dfNum, aes(x = dist, y = total_freight, color=periodo_ano_estima_entrega)) +    #Plota grafico
+  geom_point(size=2, shape=16) +                           #Muda padrao dos pontos  
+  scale_color_manual(values=c("violetred", "royalblue", "green", "yellow")) +  #Muda cores
+  geom_smooth(method = "lm", se=FALSE)#Coloca linhas - Nota-se uma interacao entre Volume e o periodo do ano que a entrega é feita
+```
+
+- Da mesma forma, realizamos uma análise de interação entre o preço total (variável total_price) e o fator periodo_ano_estima_entrega. Novamente, criamos gráficos de dispersão para cada nível do fator de período e colorimos os pontos de acordo com o preço total. Isso nos permitiu avaliar se a relação entre o preço total e o valor do frete variava em diferentes períodos do ano estimado de entrega. Já para a variável explicativa que representa o preço total (total_price), as linhas que represetam os trimestres tem inclinacoes diferentes, deste modo indica que há uma interação a ser considerada no modelo de regressão. Por exemplo, vemos que no terceiro trimestre os valores dos pedidos são mais caros que nos periodos anteriores.
+
+```{r chunk1111, echo=T}
+ggplot(dfNum, aes(x = total_price, y = total_freight, color=periodo_ano_estima_entrega)) +    #Plota grafico
+  geom_point(size=2, shape=16) +                           #Muda padrao dos pontos  
+  scale_color_manual(values=c("violetred", "royalblue", "green", "yellow")) +  #Muda cores
+  geom_smooth(method = "lm", se=FALSE)#Coloca linhas - Nota-se uma interacao entre Volume e o periodo do ano que a entrega é feita
+```
+
+- A análise de interação também foi conduzida para a variável volume e o fator periodo_ano_estima_entrega. Utilizamos gráficos de dispersão para representar a relação entre o volume e o valor do frete, segmentados por níveis do fator de período. A coloração dos pontos foi baseada nos valores de volume. Ao analisar a variavel volume interagindo com periodo esperado para entrega, observa-se que alguns trimestres tem inclinações diferentes, que é o caso do terceiro e quarto, com maiores tamanhos volumétricos de pedidos, com o primeiro e segundo trimestre sendo compras de menor tamanho físico. E novamente, estas inclinações diferentes indicam que precisam ser testadas na modelagem estatística 
+
+```{r chunk122, echo=T}
+ggplot(dfNum, aes(x = volume, y = total_freight, color=periodo_ano_estima_entrega)) +    #Plota grafico
+  geom_point(size=2, shape=16) +                           #Muda padrao dos pontos  
+  scale_color_manual(values=c("violetred", "royalblue", "green", "yellow")) +  #Muda cores
+  geom_smooth(method = "lm", se=FALSE)#Coloca linhas - Nota-se uma interacao entre Volume e o periodo do ano que a entrega é feita
+```
+
+Essa análise de interação entre as variáveis numéricas (dist, total_price, volume) e o fator periodo_ano_estima_entrega nos permitiu compreender melhor como essas variáveis podem influenciar de forma conjunta o valor do frete em diferentes momentos do ano estimado de entrega. Esses insights serão úteis para a construção de modelos de regressão mais precisos e para a interpretação dos resultados finais. Trazendo a necessidade de testar no modelo a interação entre total_price e volume com a variável (fator) periodo_ano_estima_entrega.
+
+## Elaboração do Modelo de Regressão
+
+Para analisar os determinantes do valor do frete em nosso e-commerce brasileiro, realizamos uma modelagem de regressão linear múltipla. Utilizamos a linguagem de programação R com a função lm() para construir o modelo. A fórmula utilizada para o modelo foi a seguinte:
+
+[lm(total_freight ~ product_weight_g + volume + dist + tempoEntregaNum + qty_product + total_price + factor(periodo_ano_estima_entrega) + volume:factor(periodo_ano_estima_entrega) + total_price:factor(periodo_ano_estima_entrega), data = dfNum)]
+
+Nesta fórmula, total_freight é a variável dependente que estamos tentando prever, enquanto as outras variáveis são as variáveis independentes que consideramos relevantes com base na análise exploratória de dados. Vamos explicar cada parte da fórmula:
+
+product_weight_g, volume, dist, tempoEntregaNum, qty_product e total_price são as variáveis numéricas que incluímos como preditores no modelo.
+
+factor(periodo_ano_estima_entrega) representa o fator categórico que indica o período do ano estimado de entrega. Ele foi incluído no modelo para capturar as possíveis variações sazonais nas relações entre as variáveis independentes e a variável dependente.
+
+As interações entre variáveis foram modeladas com volume:factor(periodo_ano_estima_entrega) e total_price:factor(periodo_ano_estima_entrega). Isso permite que o efeito das variáveis numéricas (volume e total_price) no valor do frete varie de acordo com o período do ano estimado de entrega.
+
+Ao ajustar o modelo de regressão linear múltipla, consideramos a significância estatística dos coeficientes, a multicolinearidade entre as variáveis independentes e realizamos testes de hipóteses para avaliar a qualidade do ajuste do modelo.
+
+### Resultados da Modelagem
+Os resultados da modelagem de regressão linear forneceram importantes insights sobre os determinantes do valor do frete em nosso e-commerce brasileiro. Alguns dos principais resultados incluem:
+
+Efeito das Variáveis Numéricas: As variáveis numéricas, como o peso do produto (product_weight_g), o volume e o preço total, mostraram-se estatisticamente significativas na previsão do valor do frete. Isso sugere que aumentos nessas variáveis estão associados a aumentos ou diminuições no valor do frete, dependendo de suas direções de efeito.
+
+Efeito do Período do Ano Estimado de Entrega: A inclusão do fator categórico do período do ano estimado de entrega revelou variações sazonais nas relações entre as variáveis independentes e o valor do frete. Isso indica que o período do ano pode influenciar a dinâmica dos custos de frete.
+
+Interações Significativas: As interações entre as variáveis numéricas (volume e preço total) e o fator do período do ano estimado de entrega foram estatisticamente significativas. Isso significa que o efeito dessas variáveis na determinação do valor do frete pode variar sazonalmente.
+
+Esses resultados são fundamentais para entender como as características dos produtos, as distâncias entre CEPs, os tempos de entrega e os preços afetam o valor do frete em nosso e-commerce brasileiro. Eles também fornecem informações valiosas para a tomada de decisões e estratégias de preços sazonais. A seguir, apresentaremos uma interpretação mais detalhada dos coeficientes e medidas de ajuste do modelo.
+
+A seleção de variáveis é uma etapa crítica na construção de um modelo de regressão linear múltipla. O objetivo é identificar quais variáveis independentes são mais relevantes para prever a variável dependente, neste caso, o valor do frete (total_freight). Para realizar essa seleção de forma sistemática, utilizamos o método stepwise com o critério BIC.
+
+foi usada a formula step(modelo_num, direction = 'both',  k = log(n)) e com isto obtido o seguinte modelo:
+
+```{r modelo1, echo=T}
+modelo_num = lm(total_freight ~ product_weight_g+volume+dist+tempoEntregaNum+qty_product+total_price+factor(periodo_ano_estima_entrega)+volume:factor(periodo_ano_estima_entrega)+total_price:factor(periodo_ano_estima_entrega), data = dfNum)
+```
+
+![Figura 2: Resultado do Modelo 1](/Users/victortelles/Documents/Coursera/Especializacao - UFMG/04 - Modelagem de relacoes usando Regressao Linear/Trabalho/modelo1.png)
+No modelo 1, o R2 ajustado foi de 0.5618, e o termo do erro (sigma2) 185.2557.
+Fazendo a analise de VIF, não são observadas variaveis que tenham valor acima do treshold definido (5). Ou seja, pode-se continuar com todas as variáveis definidas. Observando o teste t, ao usar o comando summary(modelo1), ve-se que todas as variaveis tem p-valor abaixo de 5%, ou seja, devem fazer parte do modelo.
+
+```{r modelo2, echo=T}
+n <- nrow(dfNum)
+#METODO DE SELECAO DE MODELO - USANDO BIC como critério
+modelo_numStep <- step(modelo_num, direction = 'both',  k = log(n))
+vif(modelo_num)
+summary(modelo_num)$adj.r.squared #[1] 0.5618984
+summary(modelo_num)
+summary(modelo_num)$sigma^2 #185.2557    
+#anova(modelo_num)
+```
+
+![Figura 3: summary(modelo1)](/Users/victortelles/Documents/Coursera/Especializacao - UFMG/04 - Modelagem de relacoes usando Regressao Linear/Trabalho/sum_modelo1.png)
+### Analise de Resíduos
+
+Após a construção do modelo de regressão linear múltipla, é fundamental realizar uma análise de resíduos para verificar se o modelo atende aos pressupostos da regressão linear e identificar possíveis problemas que possam afetar a qualidade das previsões.
+
+#### Gráfico Quantil-Quantil (QQ Plot)
+O gráfico QQ plot é uma ferramenta visual que compara os resíduos do modelo com uma distribuição teórica, geralmente a distribuição normal. Um QQ plot bem comportado exibirá pontos próximos a uma linha reta, indicando que os resíduos estão próximos de uma distribuição normal. Desvios significativos da linha reta podem sugerir desvios da normalidade.
+
+```{r residuos1, echo=T}
+residuos <- modelo_numStep$residuals   #Calcula o vetor de residuos 
+preditos <- predict(modelo_numStep) #Calcula os valores preditos 
+qqnorm(residuos) ; qqline(residuos)   #Grafico de probabilidade normal
+```
+
+No qqplot já é possivel observar a ausencia de normalidade dos resíduos, mas ainda sim é necessario realizar o teste de hipotese para tal
+
+#### Teste de Kolmogorov-Smirnov (KS)
+O teste de Kolmogorov-Smirnov é uma ferramenta estatística para verificar se os resíduos seguem uma distribuição normal. O teste compara a distribuição acumulada empírica dos resíduos com a distribuição acumulada teórica esperada (normal). Se o valor-p associado ao teste for significativo, isso indicará que os resíduos não seguem uma distribuição normal. Ao longo do curso foi usado o teste de Shapiro-wilk, porém no cenario observado pelos alunos tal ferramenta não pode ser utilizada, visto que o dataframe possui mais de 5000 observações, desta forma superando o limite máximo do teste. O p-valor do teste, um numero infinitamente pequeno, ratifica o fato observado no qqplot, que os residuos não seguem uma distribuição normal.
+
+```{r residuos2, echo=T}
+ks.test(residuos, "pnorm", mean=mean(residuos), sd=sd(residuos))
+```
+
+#### Teste de Breusch-Pagan para Homocedasticidade
+A homocedasticidade refere-se à igualdade da variância dos resíduos em diferentes níveis das variáveis independentes. O teste de Breusch-Pagan é utilizado para verificar a homocedasticidade dos resíduos. Se o valor-p associado ao teste for significativo, isso sugere que a variância dos resíduos não é constante, o que pode indicar um problema de heterocedasticidade. 
+Observando tanto o gráfico de Ajustados vs. Residuos, quanto o resultado do teste de Breush-pagan, vemos que os resudios nao tem homocedacidade, valor-p do teste, assim como visto no KS, é um numero muito pequeno o que faz rejeitar a hipotese nula.
+
+```{r residuos3, echo=T}
+plot(preditos, residuos, main="Ajustados vs. Residuos")  
+abline(h=0)
+```
+```{r residuos3b, echo=T}
+
+bptest(modelo_numStep) #Breusch-Pagan teste (avalia homogeneidade da variancia dos erros quando explicativa e' quantativa)
+
+```
+#### Avaliação da Ordem versus Resíduos
+Além da análise visual e dos testes estatísticos, é importante avaliar a relação entre a ordem das observações e os resíduos. Se houver algum padrão nos resíduos em relação à ordem das observações, isso pode indicar a presença de autocorrelação nos resíduos, o que é um problema que pode afetar a validade das inferências do modelo.
+Com a base de dados e o modelo obtido, nesta primeira tantativa, nao é identificado anomalias quanto a ordem e resíduos.
+
+```{r residuos4, echo=T}
+plot(1:nrow(dfNum), residuos, main="Ordem vs. Residuos", xlab="Ordem") 
+abline(h=0)
+```
+
+Como os resíduos observados não respeitam a distribuição normal e não são homocedásticos, é necessário seguir com a proposição para ajustes no modelo.
+
+### Transformação Box-Cox na Variável Dependente
+A transformação Box-Cox é uma técnica estatística usada para lidar com variáveis dependentes que não atendem aos pressupostos da regressão linear, como normalidade e homocedasticidade. Esta transformação é aplicada à variável dependente (nesse caso, o valor do frete - total_freight) com o objetivo de tornar os resíduos mais próximos de uma distribuição normal, atendendo aos pressupostos da regressão linear.
+
+**Benefícios Esperados**. 
+Ao aplicar a transformação Box-Cox à variável dependente, esperamos obter os seguintes benefícios:
+
+- Melhoria na Normalidade: A transformação Box-Cox pode ajudar a tornar os resíduos mais próximos de uma distribuição normal. Isso é importante, pois muitos testes estatísticos e pressupostos da regressão linear dependem da normalidade dos resíduos.
+
+- Estabilização da Variância: Em alguns casos, a transformação Box-Cox pode ajudar a estabilizar a variância dos resíduos, tornando-os homocedásticos. Isso é importante para garantir que os erros de previsão não dependam do valor previsto.
+
+- Melhoria nas Propriedades Estatísticas: A transformação pode melhorar as propriedades estatísticas dos resíduos, como a independência e a distribuição normal, o que pode levar a intervalos de confiança e testes de hipóteses mais válidos.
+
+**Perda de Interpretação**. 
+No entanto, é importante observar que a transformação Box-Cox também possui algumas desvantagens:
+
+1. Perda de Interpretação Direta: A transformação Box-Cox altera a escala e a interpretação da variável dependente transformada. Isso significa que os coeficientes estimados no modelo transformado não podem ser diretamente interpretados em termos das unidades originais da variável. A interpretação dos resultados deve ser feita com base na escala transformada.
+
+2. Complexidade: A transformação Box-Cox introduz uma etapa adicional de complexidade no modelo, pois é necessário inverter a transformação para obter previsões na escala original, se necessário.
+
+A decisão de aplicar a transformação Box-Cox deve ser baseada em evidências da análise de resíduos, como visto na subsessão anterior, a análise inicial dos resíduos revelou desvios significativos dos pressupostos da regressão linear, a transformação é ser uma opção. Com isto foi feito o modelo2, em que seguimos usando o método step-wise e BIC como critério para seleção de variáveis.
+
+```{r boxcox1, echo=T}
+boxcox1 <- with(dfNum, boxCox(total_freight ~ product_weight_g+volume+dist+tempoEntregaNum+qty_product+total_price+factor(periodo_ano_estima_entrega)+volume:factor(periodo_ano_estima_entrega)+total_price:factor(periodo_ano_estima_entrega), 
+                              lambda = seq(-5, 5, by=0.01), 
+                              plotit=TRUE)) #Salvando os resultados numericos do boxcox
+lambda <- boxcox1$x[which.max(boxcox1$y)] #Valor de 'lambda' que maximiza a 'profile log-likelihood'
+print(lambda)
+dfNum$total_freight_boxcox <- (dfNum$total_freight^lambda - 1)/lambda
+
+modelo_num2 <- lm(total_freight_boxcox ~ product_weight_g+volume+dist+tempoEntregaNum+qty_product+total_price+factor(periodo_ano_estima_entrega)+volume:factor(periodo_ano_estima_entrega)+total_price:factor(periodo_ano_estima_entrega), data=dfNum)
+#METODO DE SELECAO DE MODELO - USANDO BIC como critério
+modelo_numStep2 <- step(modelo_num2, direction = 'both',  k = log(n))
+vif(modelo_num2)
+```
+
+É observado um lambda = -0.1515152 (dízima periódica), o que torna complexa a interpretação da variável resposta, porém dado o p-valor muito pequeno, observado na primeira análise de resíduos, será adotado o valor de lambda na transformação exata, sem aproximações em uma primeira tentativa.
+Neste cenário transformado, obtemos um melhor ajuste do modelo, observando o R2 Ajustado, que sai de 0.52 para 0.64. Além disto, o termo do erro (sigma2) sai de 185.25, para 0.0416, uma drástica redução.
+É um ganho representativo, embora se perca a interpretabilidade, visto que o valor do frete agora precisa ser interpretado como Frete elevado a -0.1515152, subtraido de 1 e por fim, dividido por -0.1515152!
+
+#### Nova analise de Residuos - Teste de Kolmogorov-Smirnov (KS)
+Da mesma maneira que foi explicado na sessão anterior, foi realizado novamente, agora para o modelo2, o teste de Kolmogorov-Smirnov, para avaliar a normalidade dos resíduos do modelo obtido após transformação de box-cox da variavel dependente. E assim como no primeiro teste, pode-se rejeitar a hipótese nula de que os residuos do modelo2 respeitam uma distribuição normal.
+
+```{r residuos21, echo=T}
+residuos2 <- modelo_numStep2$residuals   #Calcula o vetor de residuos 
+preditos2 <- predict(modelo_numStep2) #Calcula os valores preditos 
+qqnorm(residuos2) ; qqline(residuos2)   #Grafico de probabilidade normal
+
+ks.test(residuos2, "pnorm", mean=mean(residuos2), sd=sd(residuos2))
+```
+
+####Nova analise de Residuos -  Teste de Breusch-Pagan para Homocedasticidade
+Refeito o teste de Breusch-Pagan para avaliar a homocedacidade dos resíduos e a h0 segue sendo rejeitada, os resíduos obtidos a partir do modelo2 não possuem variância constante.
+
+```{r residuos31, echo=T}
+plot(preditos2, residuos2, main="Ajustados vs. Residuos")  
+abline(h=0)
+
+bptest(modelo_num2) #Breusch-Pagan teste (avalia homogeneidade da variancia dos erros quando explicativa e' quantativa)
+```
+
+#### Nova analise de Residuos - Avaliação da Ordem versus Resíduos
+Com a base de dados e o modelo obtido, na segunda tantativa, nao é identificado anomalias quanto a ordem e resíduos.
+
+```{r residuos41, echo=T}
+plot(1:nrow(dfNum), residuos, main="Ordem vs. Residuos", xlab="Ordem") 
+abline(h=0)
+```
+
+Como os resíduos observados não respeitam a distribuição normal e não são homocedásticos, é necessário seguir com a proposição para ajustes no modelo, agora serão analisados e possívelmente removidos as observações de grande influência.
+
+### Análise de Observações Influentes
+Após a tentativa de normalizar os resíduos por meio da transformação Box-Cox, é possível que ainda existam observações que tenham um impacto desproporcional nos resultados do modelo de regressão linear. Essas observações são chamadas de "observações influentes" e podem distorcer a análise estatística e as previsões do modelo.
+Os hat values são medidas que indicam o grau de influência de cada observação nos valores ajustados pelo modelo de regressão. Eles refletem o quanto cada observação se afasta da média dos valores das variáveis independentes. Observações com hat values altos têm um impacto maior nas estimativas dos coeficientes do modelo e, consequentemente, nas previsões.
+Para identificar observações influentes, foram calculados os hat values para cada observação em nosso conjunto de dados. Observações com hat values significativamente maiores do que a média dos hat values podem ser consideradas influentes.
+
+```{r programa2, echo=F}
+p <- length(modelo_numStep2$coefficients)#numero parametros do modelo (incluindo beta0)
+QMRes <- summary(modelo_numStep2)$sigma^2
+dfNum$OBS <- seq(1:n)
+res <- modelo_numStep2$residuals
+r.stand <- res/sqrt(QMRes)          ### Residuos padronizados.
+r.stud <- rstandard(modelo_numStep2)     ### Residuos studentizados.
+r.stud.ext <- rstudent(modelo_numStep2)  # Calculo dos residuos studentizados externamente
+r.press <- rstandard(modelo_numStep2, type="pred") ### Residuos PRESS.
+Hii <- hatvalues(modelo_numStep2)           #Calculo dos alavancas
+d.Cook <- cooks.distance(modelo_numStep2)  # Calculos das distancias de Cook
+df.betas <- dfbetas(modelo_numStep2)
+df.fits <- dffits(modelo_numStep2)
+a.res <- dfNum$OBS[abs(r.stud) > qt(0.99,n-p)]#Identificando observacoes com residuos discrepantes
+
+dfNum <- data.frame(dfNum, 
+                    residuos=round(residuos, 3), 
+                    r.stand=round(r.stand, 3), 
+                    r.stud=round(r.stud, 3), 
+                    r.stud.ext=round(r.stud.ext, 3),
+                    r.press=round(r.press, 3),
+                    Hii=round(Hii, 3), 
+                    d.Cook=round(d.Cook, 3), 
+                    df.beta0=round(df.betas[,1], 3), 
+                    df.beta1=round(df.betas[,2], 3), 
+                    df.beta2=round(df.betas[,3], 3), 
+                    df.beta3=round(df.betas[,4], 3),
+                    df.beta4=round(df.betas[,5], 3),
+                    df.beta5=round(df.betas[,6], 3),
+                    df.beta6=round(df.betas[,7], 3),
+                    df.beta7=round(df.betas[,8], 3),
+                    df.fits=round(df.fits, 3))
+```
+
+```{r obsInf1, echo=T}
+Hii <- hatvalues(modelo_numStep2) 
+boxplot(Hii)  
+a.Hii <- dfNum$OBS[Hii > 4*p/n]
+dfPontoAlav <- dfNum[a.Hii,]
+head(dfPontoAlav)
+```
+Deste modo observa-se registros com alto grau de influencia, segundo convensão, toma-se hat values influentes quando *Hii* é maior que 2 vezes a razão entre quantidade de parâmetros sobre a quantidade da amostra, e neste estudo, para fins de conservadorismo e por ter o tamanho amostral de aproximadamente 95 mil, o que torna complexo e caro analisar individualmente as observações, priorizou-se as observações deveras influente. 
+
+Além dos hat values, também foram calculados e analisados os Resíduos Studentizados, que são resíduos que foram padronizados para terem uma média de 0 e um desvio padrão de 1. Isso os torna úteis para identificar observações que se desviam significativamente do padrão esperado. Os Resíduos Studentizados são frequentemente usados para verificar a presença de valores atípicos ou observações influentes. Valores absolutos dos Resíduos Studentizados significativamente maiores que 2 indicam observações que merecem uma análise mais aprofundada. Com esta caracteristicas sao identificados mais de 4300 observações. 
+
+```{r obsInf2, echo=T}
+boxplot(r.stud)
+
+a.r.stud <- dfNum$OBS[abs(r.stud) > 2] 
+#dfNum[a.r.stud,] #ponto de alavanca
+
+dfRStud <- dfNum[a.r.stud,]
+head(dfRStud)
+```
+Observando o boxplot de r.stud, é possivel notar que há residuos com valores acima e abaixo dos limites recomendados. E isto pode estar afetando o ajuste do modelo.
+
+#### Remoção de Observações para Fins Didáticos
+Em alguns casos, para fins didáticos e de simplificação da análise, é útil remover temporariamente observações influentes do modelo. Isso pode ajudar a identificar melhor o comportamento geral do modelo quando as observações problemáticas são removidas. No entanto, é importante ressaltar que a remoção de observações influentes não é recomendada em análises reais, a menos que haja uma justificativa substancial.
+
+A remoção de observações com hat values altos pode ser realizada da seguinte forma:
+
+1. Identifique as observações com hat values altos, geralmente aquelas cujos hat values estão bem acima da média.
+
+2. Crie uma nova versão do conjunto de dados, excluindo essas observações.
+
+3. Realize uma análise separada com o conjunto de dados reduzido, observando as mudanças nos resultados do modelo, como coeficientes e estatísticas de ajuste.
+
+4. Compare os resultados entre o modelo completo e o modelo com observações influentes removidas para avaliar o impacto dessas observações no ajuste do modelo.
+
+Desta forma, foram realizadas duas tentativas, uma removendo os Hat Values e outra removendo os Resíduos Studentizados, conforme regras supracitadas. Inicialmente testando a remoção dos Hat Values, tem-se o modelo 3, abaixo:
+
+```{r obsInf3, echo=T}
+modelo_numStep3  <- update(modelo_numStep2, subset = -a.Hii)
+summary(modelo_numStep3)$adj.r.squared 
+summary(modelo_numStep3)
+summary(modelo_numStep3)$sigma^2 
+vif(modelo_numStep3) 
+```
+O modelo 3, sem os Hatvalues com valor acima do threshold determinado (4*p/n), tem o R2 ajustado de 0.624, inferior ao R2 ajustado que tinha no modelo 2, e o termo do erro em 0.037, ganho pouco significativo em relação ao modelo 2 que havia 0.042. No modelo 3 não se observa multicolinearidade e as variaveis selecionadas seguem sendo significativas para explicar o valor do frete.
+Por fim, ao realizar um teste KS para checar a normalidade dos resíduos do modelo 3, e a hipótese nula segue sendo rejeitada. 
+
+```{r obsInf4, echo=T}
+ks.test(modelo_numStep3$residuals, "pnorm", mean=mean(modelo_numStep3$residuals), sd=sd(modelo_numStep3$residuals))
+```
+
+Uma segunda tentativa foi feita removendo observações cujo, Residuo Studentizado em modulo, fosse superior a 2, formando o modelo 3b:
+
+```{r obsInf5, echo=T}
+modelo_numStep3b  <- update(modelo_numStep2, subset = -a.r.stud)
+summary(modelo_numStep3b)$adj.r.squared #[1] 0.7414162 
+summary(modelo_numStep3b)
+summary(modelo_numStep3b)$sigma^2   
+anova(modelo_numStep3b)
+vif(modelo_numStep3b) 
+```
+
+O modelo 3b, sem os registros cujo valor absoluto do Residuo Studentizado é maior que 2, trouxe um R2 Ajustado de 0.741, comparado ao 0.64, tem um ganho significativo além de uma redução no termo do erro, que sai de 0.037, para 0.026. Porém, a hipotese nula do teste de normalidade segue sendo rejeitada mais uma vez.
+
+```{r obsInf6, echo=T}
+ks.test(modelo_numStep3b$residuals, "pnorm", mean=mean(modelo_numStep3b$residuals), sd=sd(modelo_numStep3b$residuals))
+```
+
+Vale ressaltar que em ambas as tentativas de modelos, partiram do modelo 2, onde fez-se a transformação de box-cox.
+
+Foram analisados outros indicadores:
+
+A Distância de Cook é uma métrica que avalia o impacto de cada observação nos coeficientes do modelo de regressão e nas previsões. Ela é calculada para cada observação e quantifica o quanto a previsão do modelo mudaria se a observação fosse removida do conjunto de dados. Em outras palavras, a Distância de Cook mede o quanto uma observação influencia o modelo. Observações com valores elevados de Distância de Cook podem ser consideradas influentes, pois têm um impacto desproporcional nas estimativas do modelo. Valores significativamente maiores que 1 indicam que a observação está exercendo uma influência substancial no modelo.
+
+Os DFBETAS são estatísticas que medem o efeito de cada observação nos coeficientes do modelo. Eles indicam quanto a inclusão ou exclusão de uma observação altera os valores dos coeficientes. DFBETAS podem ser usados para identificar observações que têm um impacto substancial em um ou mais coeficientes. Valores absolutos de DFBETAS significativamente maiores que 1 indicam observações influentes.
+
+Os DFBITs são semelhantes aos DFBETAS, mas medem o efeito de cada observação nos valores ajustados do modelo. Eles indicam quanto a inclusão ou exclusão de uma observação altera as previsões do modelo. DFBITs são úteis para identificar observações que têm um impacto substancial nas previsões do modelo. Valores absolutos de DFBITs significativamente maiores que 1 indicam observações influentes.
+
+```{r obsInf7, echo=T}
+ols_plot_cooksd_bar(modelo_numStep2)
+ols_plot_cooksd_chart(modelo_numStep2)
+ols_plot_dfbetas(modelo_numStep2)
+ols_plot_dffits(modelo_numStep2)
+```
+
+Os registros que tinham estes demais indicadores altos, tambem haviam sido observados com Hat Values ou Residuos Studentizados alto, desta maneira nao foi feita nenhuma outra tentativa de modelagem a partir de remoção de obervações influentes.
+
+É importante notar que a remoção de observações influentes é uma medida extrema e deve ser feita com cautela. Em uma análise real, as observações não devem ser removidas a menos que haja uma razão substancial para fazê-lo, como a identificação de erros de medição evidentes ou valores atípicos que não fazem sentido no contexto do estudo.
+
+A análise de observações influentes é uma etapa valiosa na avaliação da robustez do modelo de regressão, mas as conclusões e decisões devem ser baseadas em uma compreensão cuidadosa do conjunto de dados e do problema em questão. 
+
+Mesmo utilizando um apelo puramente didático, ainda não conseguiu-se chegar a um modelo cujos resíduos respeitem a distribuição normal, mais uma tentativa foi realizada.
+
+### Transformação das Variáveis Preditoras 
+Além de considerar a transformação da variável dependente (como discutido na sessão anterior), também é importante avaliar a necessidade de transformar as variáveis preditoras em um modelo de regressão linear múltipla. A transformação de Box-Tidwell é uma técnica que permite lidar com variáveis independentes que não exibem uma relação linear adequada com a variável dependente. Essa transformação é particularmente útil quando a relação entre uma variável preditora contínua e a variável dependente não é linear, mas pode ser tornada linear através de uma transformação adequada.
+
+#### O que é a Transformação de Box-Tidwell?
+A Transformação de Box-Tidwell é uma técnica que consiste em aplicar uma transformação específica a uma variável preditora contínua, geralmente a variável independente com uma relação não linear com a variável dependente, a fim de tornar a relação linear. A transformação é feita através de uma função específica, que é determinada pelos logaritmos naturais da variável preditora e da variável dependente.
+
+1. Identificação da Variável a Ser Transformada: Primeiro, identificamos a variável preditora que exibe uma relação não linear com a variável dependente e que pode se beneficiar da transformação.
+
+2. Cálculo dos Logaritmos Naturais: Calculamos o logaritmo natural da variável preditora e da variável dependente.
+
+3. Regressão Linear: Realizamos uma regressão linear entre o logaritmo natural da variável dependente (log(y)) e a variável preditora transformada (log(x)).
+
+4. Avaliação dos Coeficientes: A inclinação (coeficiente) da variável preditora transformada na regressão linear fornece informações sobre a relação entre a variável preditora original e a variável dependente. O coeficiente deve ser interpretado com base nos logaritmos naturais das variáveis originais.
+
+```{r boxtid1, echo=T}
+modelo_numStep4 <- boxTidwell(total_freight_boxcox ~ product_weight_g+volume+dist+tempoEntregaNum+qty_product+total_price, other.x=~ factor(periodo_ano_estima_entrega), data=dfNum)
+modelo_numStep4
+
+dfNum$product_weight_g_boxTidwell <- (dfNum$product_weight_g^0.55142 - 1)/0.55142
+dfNum$volume_boxTidwell <- (dfNum$volume^1.20836 - 1)/1.20836
+dfNum$dist_boxTidwell <- (dfNum$dist^0.35354 - 1)/0.35354
+dfNum$tempoEntregaNum_boxTidwell <- (dfNum$tempoEntregaNum^(-0.63776) - 1)/(-0.63776)
+dfNum$qty_product_boxTidwell <- (dfNum$qty_product^0.11925 - 1)/0.11925
+dfNum$total_price_boxTidwell <- (dfNum$total_price^0.37544 - 1)/0.37544
+```
+
+#### Considerações Importantes
+- Ajuda a linearizar relações não lineares entre variáveis preditoras contínuas e a variável dependente.
+- Pode melhorar a interpretabilidade dos resultados ao tornar a relação mais próxima de uma relação linear.
+- A transformação de Box-Tidwell deve ser realizada após uma análise cuidadosa dos dados, incluindo a identificação de relações não lineares.
+- É importante lembrar que, após a transformação, a interpretação dos coeficientes no contexto das variáveis originais deve ser feita considerando os logaritmos naturais.
+- Essa transformação pode ser aplicada apenas a variáveis contínuas. Variáveis categóricas não são adequadas para essa técnica.
+
+A transformação de Box-Tidwell é uma ferramenta útil para tornar as relações entre variáveis preditoras contínuas e a variável dependente mais adequadas à regressão linear. Ela pode ser uma abordagem eficaz para melhorar o ajuste do modelo e a interpretabilidade dos resultados. No entanto, é fundamental realizar essa transformação com base na compreensão do domínio e nas características dos dados.
+
+Partindo do modelo de regressao linear multipla que teve o melhor R2 Ajustado e menor Sigma2, que foi o modelo 3b (com y transformado por box-cox e sem as observações cujo R.stud em modulo seja maior que 2), foi feita mais uma tentativa, agora transformando as variaveis preditoras. Será chamado no texto de Modelo 4.
+
+```{r boxtid2, echo=T}
+modelo_num5 <- lm(total_freight_boxcox ~ product_weight_g_boxTidwell+volume_boxTidwell+dist_boxTidwell+tempoEntregaNum_boxTidwell+qty_product_boxTidwell+total_price_boxTidwell+factor(periodo_ano_estima_entrega)+total_price_boxTidwell:factor(periodo_ano_estima_entrega)+volume_boxTidwell:factor(periodo_ano_estima_entrega), data=dfNum)
+modelo_numStep6 <- update(modelo_num5, subset = -a.r.stud)
+modelo_numStep7 <- step(modelo_numStep6, direction = 'both',  k = log(n))
+summary(modelo_numStep7)$adj.r.squared 
+summary(modelo_numStep7)
+summary(modelo_numStep7)$sigma^2   
+```
+
+Neste modelo, com tanto as variaveis explicativas quanto a variavel dependente transformada, chega-se a um R2 Ajustado de 0.805 e um sigma2 de 0.0197, sendo desta maneira os melhores indicares até o momento.
+
+#### Teste de Normalidade dos Resíduos 
+Mais uma vez é necessário testar a normalidade dos resíduos obtidos a partir do modelo 4. Obtem-se um QQPlot com uma aparencia mais ajustada, porém com as extremidades ainda descoladas. E ao realizar o teste de Kolmogorov-Smirnov, segue-se rejeitando a hipótese nula de normalidade dos residuos
+
+```{r residuos51, echo=T}
+residuos7 <- modelo_numStep7$residuals   #Calcula o vetor de residuos 
+preditos7 <- predict(modelo_numStep7) #Calcula os valores preditos 
+qqnorm(residuos7) ; qqline(residuos7)   #Grafico de probabilidade normal
+
+ks.test(residuos7, "pnorm", mean=mean(residuos7), sd=sd(residuos7))
+```
+
+#### Teste de Homocedacidade de Breusch-Pagan
+O mesmo foi necessario fazer para homocedacidade. O gráfico de Ajustados vs. Residuos, segue com a mesma aparencia de nuvem com uma leve impressão de que a variância aumenta na região central do gráfico, e depois reduz novamente. O teste de Breusch-Pagan serve para ratificar a impressão visual e confirmar a heterocedacidade.
+
+```{r residuos52, echo=T}
+plot(preditos7, residuos7, main="Ajustados vs. Residuos")  
+abline(h=0)
+
+bptest(modelo_numStep7) 
+```
+
+# Conclusão
+
+Conclui-se que mesmo testando diversas técnicas o frete não se relaciona linearmente com as demais variáveis, e há ressalvas quanto ao uso dos modelos propostos para previsão do frete de um novo pedido realizado neste market place.
+O melhor modelo obtido do ponto de vista de explicabilidade das variveis e redução do termo do erro, tem uma interpretação extremamente complexa, e é muito dificil para um ser humano médio interpretar como um grama adicional ou um cm3 adicional em produto comprado, vai impactar em reais no valor do frete. Mesmo com os ganhos do ponto de vista matemático, para o uso corriqueiro e nao automatizado, recomenda-se o uso do modelo 1. Caso seja possível automatizar a entrada de dados e transformar para visualização em reais diretos, aí sim, utiliza-se o modelo 4, ambos com ressalvas.
+
+
