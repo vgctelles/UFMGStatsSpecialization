@@ -1,0 +1,953 @@
+---
+title: "Trabalho séries temporais - Modelagem Emprego Formal em MG"
+author: "Victor Telles e Leandro Barros"
+date: "2024-04-26"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE,}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r dados1, include=FALSE, echo=FALSE}
+library(corrplot)
+library(ggplot2)
+require(car) # pacote car - para analise de colinearidade entre variavies 
+#require(rgl) # pacote rgl
+library(tidyverse)
+library(ks)
+library(tseries)
+library(moments)
+library(stats)
+library(forecast)
+library(astsa)
+library(dlm)
+
+#Definicao do Ambiente de Trabalho
+setwd("/Users/victortelles/Documents/Coursera/Especializacao - UFMG/06 - Analise de Series Temporais/Trabalho Pratico Final/serie2")
+
+#Leitura e checagem
+stEmp <- read.csv("SerieIEF.csv", sep=";", header = T)
+nEmp = length(stEmp$yt)
+nEmp
+
+ts.plot(stEmp$yt, xlab = "tempo", ylab = "índice de emprego formal em MG")
+
+#definindo a Serie Tempotal - usando o pacote tseries 
+tsEmp <- ts(stEmp$yt, start = c(1999,4), frequency = 12)
+tsEmp
+
+t = c(1:nEmp)
+t2=t^2
+
+sazon1=rep.int(4:12,1)
+sazon2=rep.int(1:12,4)
+sazon3=rep.int(1:8,1)
+sazon = append(sazon1, sazon2)
+sazon = append(sazon, sazon3)
+lnEmp = log(tsEmp)
+modelo5= lm(lnEmp ~ t + t2 + factor(sazon))
+```
+
+
+## Obetivo
+
+Analisar e comparar o desempenho de diferentes técnicas de modelagem de séries temporais na previsão da Série de Empregos Formais em Minas Gerais, visando atender os 4 pontos abaixo.
+
+- Implementar e aplicar os modelos de Regressão em Séries Temporais, ARIMA, Suavização Exponencial e Modelo de Espaço-Estado à série de Empregos Formais em Minas Gerais.
+- Calcular e comparar as medidas de erro MSE (mean square erro) para cada modelo, a fim de identificar o método que apresenta o melhor desempenho preditivo.
+- Analisar a adequação de cada modelo à série temporal em estudo, considerando seus pressupostos e características.
+- Discutir os resultados obtidos e apresentar conclusões sobre a efetividade das diferentes técnicas de modelagem na previsão da série [Insira o nome da série temporal].
+
+Em Anexo, estará todo o codigo utilizado
+
+## Tecnica de Regressao em Série Temporal
+
+A Regressão em Séries Temporais é uma técnica estatística que estabelece uma relação linear entre uma variável dependente (a série temporal a ser prevista) e uma ou mais variáveis independentes (fatores explicativos). Através de um modelo de regressão linear, a técnica busca identificar como as variáveis independentes influenciam o comportamento da série temporal ao longo do tempo.
+A Regressão em Séries Temporais é uma técnica para a análise e previsão de séries temporais, mas deve ser utilizada com cautela, considerando suas suposições e limitações.
+
+### Vantagens:
+
+- Simplicidade: Fácil interpretação e implementação.
+- Versatilidade: Adaptável a diversas séries temporais e tipos de dados.
+- Transparência: Permite identificar a relação individual entre cada variável independente e a série temporal.
+
+### Desvantagens:
+
+- Suposições: Requer que a série temporal e as variáveis independentes sigam distribuições lineares e independentes.
+- Sensibilidade a outliers: Influenciada por valores atípicos nos dados.
+- Limitações na previsão: Previsões de longo prazo podem ser menos precisas.
+
+
+### Modelo Final da Técnica
+Após 5 tentativas anteriores, o modelo escolhido foi a sexta versao, visto que apresentou um menor AIC, o melhor r quadrado ajustado, e menor termo de erro. Este modelo é composto pelo tempo, pelo quadrado do tempo (para explicar a tendencia quadrática observada na serie), pelo fator sazonal e por um termo autoregressivo de ordem 1. Com isto, tem-se os pontos abaixo: 
+
+Modelo 6 - Termo autoregressivo na serie transformada
+```{r cars30, echo=TRUE, warning=FALSE}
+resid_1=rep(0,nEmp) 
+for(i in 2:nEmp)
+  resid_1[i]=modelo5$residuals[i-1]
+modelo6= lm(lnEmp ~ t + t2 + factor(sazon) + resid_1)
+summary(modelo6)
+AIC(modelo6)
+```
+
+
+Teste de normalidade dos residuos
+```{r cars31, echo=TRUE, warning=FALSE}
+plot(modelo6)
+shapiro.test(modelo6$residuals) 
+```
+Não ha evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+```{r cars32, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo6)
+```
+Há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+
+```{r cars33, echo=TRUE, warning=FALSE}
+acf(modelo6$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - ve-se autocorrelações significante
+
+### Previsao para o Modelo de Regressao em Series Temporais
+
+Foi removido os ultimos 9 registros da série para fazer a previsão e comparação entre previsto e realizado.
+
+```{r cars135, echo=TRUE, warning=FALSE}
+real=lnEmp[57:65]
+n6=length(lnEmp)-9 # Coloca em n o tamanho da serie menos 12 observacoes 
+serie=rep(0,n6) # Cria a variavel serie
+for(i in 1:n6)
+  serie[i]=lnEmp[i] # Coloca na variavel serie a serie transformada por LN
+serie=ts(serie,start=c(1999,04),frequency=12)
+t=c(1:n6)
+t2=t^2
+
+sazon1=rep.int(4:12,1)
+sazon2=rep.int(1:12,3)
+sazon3=rep.int(1:11,1)
+sazon6 = append(sazon1, sazon2)
+sazon6 = append(sazon6, sazon3)
+
+M5=lm(serie ~ t + t2+ factor(sazon6)) 
+resid_m5=rep(0,n6) 
+for(i in 2:n6)
+  resid_m5[i]=M5$res[i-1] 
+M6= lm(serie ~ t + t2 + factor(sazon6) + resid_m5)
+summary(M6)
+
+previsao = rep(1,9) 
+previsao[1] = M6$coef[1] + M6$coef[2]*(n6+1) + M6$coef[3]*(n6+1)^2 + M6$coef[14] + M6$coef[15]*M5$res[n6]
+previsao[2] = M6$coef[1] + M6$coef[2]*(n6+2) + M6$coef[3]*(n6+2)^2 + M6$coef[15]*M5$res[n6]
+
+
+for(i in 3:9)
+  previsao[i] = M6$coef[1] + M6$coef[2]*(n6+i) + M6$coef[3]*(n6+i)^2 + M6$coef[i+1] + (M6$coef[15])^i*M6$res[n6]
+
+
+previsao
+exp(previsao)
+previsao=ts(previsao,start = c(2003,12), frequency = 12)
+plot(exp(previsao))
+real=ts(real,start = c(2003,12), frequency = 12)
+plot(exp(real))
+
+previsao
+real
+```
+
+Intervalos de previsao
+
+```{r cars136, echo=TRUE, warning=FALSE}
+li=rep(1,9)
+ls=rep(1,9)
+previsaofinal=rep(1,9)
+p=length(M6$coef)
+
+PHI=1
+for(i in 1:9)
+{
+  li[i]=previsao[i] - qt(0.975,n6-p)*sd(M6$res)*sqrt(PHI)
+  ls[i]=previsao[i] + qt(0.975,n6-p)*sd(M6$res)*sqrt(PHI)
+  PHI=PHI+(M6$coef[15])^2*i
+}
+li
+for(i in 1:9)
+{
+  previsaofinal[i] = exp(previsao[i])
+  li[i]=exp(li[i])
+  ls[i]=exp(ls[i])
+}
+length(previsaofinal)
+length(real)
+vetor_prev = cbind(exp(real),previsaofinal, li, ls)
+vetor_prev
+```
+
+Calculo do Erro Quadratico Medio de Previsao:
+
+```{r cars137, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - previsaofinal[i])^2/9
+SQP
+```
+
+O valor observado acima é pequeno, o que mostra uma aderencia boa para o modelo de regressão em séries temporais.
+
+## Tecnica SARIMA
+
+O modelo SARIMA (Seasonal Autoregressive Integrated Moving Average) combina a robustez do modelo ARIMA com a flexibilidade da Suavização Exponencial para prever séries temporais com sazonalidade. Essa técnica poderosa se destaca pela capacidade de capturar padrões sazonais complexos e adaptar-se a mudanças no comportamento da série ao longo do tempo.
+O modelo SARIMA é utilizado para previsão de séries temporais com sazonalidade. Sua capacidade de capturar padrões sazonais complexos e se adaptar a mudanças no comportamento da série o torna uma escolha popular para diversas aplicações. No entanto, é importante considerar as suposições do modelo e a necessidade de uma seleção cuidadosa dos parâmetros para garantir a precisão das previsõ
+
+### Vantagens
+
+- Adaptabilidade: Captura padrões sazonais complexos e se adapta a mudanças no comportamento da série ao longo do tempo.
+- Robustez: Combina a robustez do ARIMA com a flexibilidade da Suavização Exponencial.
+- Precisão: Alcança alta precisão em previsões de curto e médio prazo.
+
+### Desvantagens
+
+- Seleção de Parâmetros: Requer a seleção cuidadosa dos parâmetros do modelo ARIMA e dos termos sazonais.
+- Suposições: Requer condições de inversibilidade e estacionariedade dos componentes MA e AR, respectivamente.
+- Complexidade: A implementação do modelo pode ser mais complexa do que outras técnicas.
+
+### Modelo Final da Técnica
+
+Foram feitos alguns testes de melhor ajuste dos parametros Auto Regressivo, Diferencial, Média Movel e Sazonal. Após as analises das saidas do modelo, observa-se que o modelo de melhor ajuste para a serie do Emprego Formal de Minas Gerais, foi o modelo abaixo, que apresentou o menor AIC.
+
+```{r cars142, echo=TRUE, warning=FALSE}
+fit2 <- sarima(lnEmp,1,1,0,1,1,1,6)
+fit2
+shapiro.test(fit2$fit$residuals)
+```
+
+Nota-se que o modelo não possui media movel para componente nao sazonal, e isto devido ao fato desta componente não apresentar significancia na analise da versão anterior do modelo.
+Através da análise da saída do modelo, é possivel comprovar a condição de inversibilidade, para o componente MA sazonal, e também é possivel comprovar a estacionariedade dos componentes autoregressivos, seja sazonal ou não sazonal. 
+
+### Previsao para o SARIMA.
+
+Da mesma maneira que a técnica anterior, exclui-se as 9 ultimas observações e faz-se a comparação entre o real e o previsto, para obtenção do indicador de qualidade de ajuste (MSE). Importante ressaltar que a série utilizada para o ajuste do SARIMA também está transformada por logaritmo.
+
+```{r cars153, echo=TRUE, warning=FALSE}
+serie
+serieSarima <- sarima.for(serie, 9, 1, 1, 0, 1, 1, 1, 6)
+serieSarima$pred
+exp(serieSarima$pred)
+```
+
+Novamente calcula-se o erro quadrático médio
+
+```{r cars143, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - exp(serieSarima$pred[i]))^2/9
+SQP 
+```
+
+E já é possivel notar que embora seja usada uma técnica mais robusta, o ajuste deste modelo SARIMA ficou pior que o ajuste do modelo de regressão em séries temporais, observando o MSE de ambos.
+
+## Técnica Suavização Exponencial
+
+A Suavização Exponencial é uma técnica de previsão robusta e adaptável que se destaca pela simplicidade e eficiência. Através da atribuição de pesos exponenciais decrescentes às observações passadas, a técnica captura as tendências recentes da série temporal e gera previsões precisas, especialmente para séries com ruído e mudanças bruscas
+
+### Vantagens
+
+- Simplicidade: Fácil implementação e interpretação.
+- Adaptabilidade: Rápida adaptação a mudanças recentes na série temporal.
+- Robustez: Eficaz para séries com ruído e mudanças bruscas.
+- Eficiência Computacional: Baixo custo computacional, ideal para grandes conjuntos de dados.
+
+### Desvantagens
+
+- Suposições: Requer que a série temporal siga distribuições lineares e independentes.
+
+### Modelo Final da Técnica
+
+De fato a implementação computacional em código R para esta técnica é muito simples, bastando apenas o uso de uma função.
+
+```{r cars144, echo=TRUE, warning=FALSE}
+fitHT <- HoltWinters(lnEmp)
+plot(fitted(fitHT))
+plot(fitHT)
+```
+
+Observando o gráfico gerado pela saída do modelo, é possivel observar os 3 componentes, um nivel, uma tendencia e uma sazonalidade, além de confirmar o bom ajuste, linha vermelha, seguindo a linha preta.
+
+### Previsão para Suaviação Exponencial
+
+Seguindo o padrão ja realizado anteriormente neste relatório, utiliza-se o vetor com as ultimas 9 observações removidas, ajusta-se um novo modelo para fazer a comparação com o realizado.
+
+```{r cars145, echo=TRUE, warning=FALSE}
+fitHT2 <- HoltWinters(serie)
+plot(fitted(fitHT2))
+plot(fitHT2) 
+
+predHT2 = predict(fitHT2,9, prediction.interval = TRUE)
+exp(predHT2)
+exp(real)
+plot(exp(predHT2))
+plot(exp(real))
+```
+
+Com o modelo ajustado, é possivel avaliar o erro médio quadratico.
+
+```{r cars146, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - exp(predHT2[i,1]))^2/9
+SQP
+```
+
+E o valor observado foi menor que o da técnica SARIMA, porém ainda é maior que o erro médio quadratico encontrado usando a técnica de regressão em séries temporais.
+
+## Técnica de Espaço-Estado
+
+O modelo de Espaço-Estado se destaca por sua flexibilidade e capacidade de representar sistemas dinâmicos complexos com alta precisão. Através de um sistema de equações diferenciais e matrizes, a técnica modela as relações entre variáveis ​​observáveis ​​e não observáveis ​​do sistema, capturando a dinâmica interna e as interações entre os componentes. Essa característica o torna ideal para prever o comportamento futuro de sistemas que apresentam mudanças não lineares, sazonalidade e ruído. é importante considerar a complexidade da implementação, a necessidade de expertise e a disponibilidade de dados de alta qualidade para garantir a efetividade da técnica. É importante considerar a complexidade da implementação, a necessidade de expertise e a disponibilidade de dados de alta qualidade para garantir a efetividade da técnica.
+
+### Vantagens
+
+- Flexibilidade: Permite modelar sistemas dinâmicos complexos com relações não lineares e sazonalidade.
+- Precisão: Alcança alta precisão em previsões, especialmente para sistemas com dinâmicas complexas.
+- Incorporação de Informação Externa: Possibilita a integração de informações externas ao modelo, como dados de outras fontes ou conhecimento especializado.
+
+### Desvantagens
+
+- Complexidade: A implementação do modelo pode ser mais complexa do que outras técnicas.
+- Necessidade de Expertise: Requer conhecimento em modelagem de sistemas dinâmicos e métodos de estimação de parâmetros.
+- Dados: Exige uma quantidade significativa de dados de alta qualidade para a estimação precisa dos parâmetros.
+
+### Modelo Final da Técnica
+Como colocado na sessão anterior, é complexo modelar usando sistemas de espaço-estado, e o código em R também é mais complexo. É necessário ter maior dominio e maior desenvolvimento de código. E para esta técnica, a série transformada gera erro na saida do modelo, ou seja, foi necessário utilizar a série original.
+
+```{r cars147, echo=TRUE, warning=FALSE}
+model<-function(u){
+  mod<-dlmModSeas(frequency=12,dV=0,dW=c(exp(u[4]),rep(0,10)))+
+    dlmModPoly(2,dV=exp(u[1]),dW=(exp(u[2:3])))
+}
+outmle=dlmMLE(tsEmp,parm=rep(0,4),model)
+exp(outmle$par)
+mod=model(outmle$par)
+outmodFil=dlmFilter(tsEmp,mod)
+
+outF<-dlmFilter(tsEmp,mod)    #Filtering
+outS<-dlmSmooth(tsEmp,mod)    #smoothing
+
+par(mfrow=c(4,1))
+ts.plot((outF$m[10:nEmp,1]))
+title("Sazonality: Filtering")
+ts.plot((outF$m[10:nEmp,12]))
+title("Slope: Filtering")
+ts.plot((outF$m[10:nEmp,13]))
+title("Level: Filtering")
+ts.plot((outF$f[10:nEmp]),ylab="Yt^",xlab="t")
+title("Preditos")
+
+par(mfrow=c(1,1))
+qqnorm(residuals(outF,sd=FALSE))
+qqline(residuals(outF,sd=FALSE))
+ 
+tsdiag(outF)
+shapiro.test(residuals(outF,sd=FALSE)) 
+```
+
+Tendo em vista os 4 graficos gerados pelo codigo acima, nota-se que os primeiros pontos para todos eles, estão, de certa forma, um pouco fora da escala, enquanto que os demais, vão, de certa forma mais alinhados. Uma caracteristica de adequação de sistemas dinâmicos na engenharia.
+Importante registar que o teste de Sharipo-wilk feito em cima dos residuos do modelo de Espaço-Estado, tem um p-valor que traz evidências para rejeitar H0, ou seja, os residuos não são normalmente distribuidos.
+
+### Previsão para Modelo de Espaço-Estado
+
+Mesmo com a ressalva acima, dos residuos do modelo não ser normalmente distribuido, foi definido fazer a previsão usando o modelo ajustado para a série sem as ultimas 9 observações.
+
+```{r cars148, echo=TRUE, warning=FALSE}
+seriePura = exp(serie)
+seriePura
+
+outmle2=dlmMLE(seriePura,parm=rep(0,4),model)
+exp(outmle2$par)
+mod2=model(outmle2$par)
+outmodFil2=dlmFilter(seriePura,mod2)
+
+outF2<-dlmFilter(seriePura,mod2)    #Filtering
+outS2<-dlmSmooth(seriePura,mod2)    #smoothing
+
+prev2=dlmForecast(outmodFil2,n=9)
+prev2$f
+previsaoMEB=as.numeric(prev2$f)
+```
+
+Execução do MSE, para comparação com os demais modelos gerados anteriormente.
+
+```{r cars158, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - previsaoMEB[i])^2/9
+SQP  
+```
+
+O valor do MSE observado pelo modelo ajustado usando a técnica de Espaço-Estado foi de 0,75, o segundo melhor gerado neste estudo.
+
+## Conclusão
+
+Para a série temporal de empregos formais no estado de Minas Gerais entre abril de 1999 e agosto de 2004, conclui-se que o modelo usando a técnica de regressão em séries temporais, se mostrou o mais precisa. Embora o esforço para se chegar ao modelo adequado, através desta técnica, tenha sido o maior, como pode ser visto no Anexo.
+Em seguida, um modelo de complexa implementação de Espaço-Estado, teve o segundo melhor desepenho em precisão, seguido depois pelo modelo de suavização exponencial, o mais simples de implementar técnicamente, e por fim, o modelo SARIMA, teve o pior desempenho para prever as ultimas 9 observações com precisão. Porém, em todos os casos os desvios foram pequenos, desta forma, para está série, pensando em esforço e retorno, a técnica de suavização exponencial seria a mais adequada a ser implementada, dada a simplicidade, sem perder precisão de forma significativa.
+
+
+
+## ANEXO - Codigo completo e Analise Exploratória
+
+### Importanto bibliotecas
+
+```{r, echo=TRUE, message= FALSE, warning=FALSE}
+library(FNN)
+library(corrplot)
+library(ggplot2)
+require(car)
+library(tidyverse)
+library(ks)
+library(tseries)
+library(moments)
+library(stats)
+library(forecast)
+library(astsa)
+library(dlm)
+```
+
+### Definicao do ambiente de trabalho e leitura de dados
+
+```{r cars1, echo=TRUE, warning=FALSE}
+setwd("/Users/victortelles/Documents/Coursera/Especializacao - UFMG/06 - Analise de Series Temporais/Trabalho Pratico Final/serie2")
+
+stEmp <- read.csv("SerieIEF.csv", sep=";", header = T)
+nEmp = length(stEmp$yt)
+ts.plot(stEmp$yt, xlab = "tempo", ylab = "Indice de emprego formal em MG")
+
+```
+
+### definindo a Serie Tempotal - usando o pacote tseries 
+
+```{r cars2, echo=TRUE, warning=FALSE}
+tsEmp <- ts(stEmp$yt, start = c(1999,4), frequency = 12)
+tsEmp
+plot(tsEmp)
+```
+## Analise Exploratoria da Série Temporal
+
+### Coeficiente de Variação da Serie
+
+
+```{r cars3, echo=TRUE, warning=FALSE}
+cv = sd(tsEmp)/mean(tsEmp)
+cv
+```
+
+Em media a série varia em 4,7%
+
+```{r cars4, echo=TRUE, warning=FALSE}
+skewness(tsEmp)
+kurtosis(tsEmp)
+```
+Observa-se simetria em torno da média. Pela curtose, temos possibilidade de gerar bastante valores nas caldas para valores de Curtoses alto - valor de referencia 3
+
+```{r cars5, echo=TRUE, warning=FALSE}
+summary(tsEmp)
+boxplot(tsEmp)
+```
+
+```{r cars6, echo=TRUE, warning=FALSE}
+fatorSazonal=rep(4:12,1)
+fatorSazonal2=rep(1:12,4)
+fatorSazonal3=rep(1:8,1)
+fatorSazo = append(fatorSazonal, fatorSazonal2)
+fatorSazo = append(fatorSazo, fatorSazonal3)
+```
+
+```{r cars7, echo=TRUE, warning=FALSE}
+boxplot(tsEmp~fatorSazo,xlab="Meses",ylab="Ã­ndice de emprego formal em MG")
+```
+Observando o boxplot mensal, é possivel observar as diferenças pluviometricas ao longo do ano
+
+```{r cars8, echo=TRUE, warning=FALSE}
+hist(tsEmp)
+```
+Ratifica-se o valor de curtose, observando caldas longas
+
+```{r cars9, echo=TRUE, warning=FALSE}
+qqnorm(tsEmp); qqline(tsEmp)
+```
+Observando o qqplot, pode-se dizer que os dados não respeitam a distribuição normal
+```{r cars10, echo=TRUE, warning=FALSE}
+shapiro.test(tsEmp)
+```
+Há evidencias para rejeitar H0 (H0: de que os dados sao normalmente distribuidos)
+
+## Análise de autocorrelação
+
+```{r cars11, echo=TRUE, warning=FALSE}
+acf(tsEmp)
+```
+Observa-se que a serie tem memoria longa - alem de vermos as ondas tradicionais de sazonalidade
+
+```{r cars12, echo=TRUE, warning=FALSE}
+pacf(tsEmp)
+```
+Observa-se que a ordem 1 ultrapassa as bandas limites
+
+## Teste de memória da Série
+
+
+```{r cars70, echo=TRUE, warning=FALSE}
+Box.test(tsEmp, lag = 1, type="Ljung-Box")
+```
+Há evidencias para rejeitar H0 (H0: o conjunto de correlação de ordem 1 é igual zero)
+
+```{r cars80, echo=TRUE, warning=FALSE}
+Box.test(tsEmp, lag = 6, type="Ljung-Box")
+```
+Há evidencias para rejeitar H0 (H0: o conjunto de correlação de ordem 6 é igual zero) ou seja possui memória de mais de 6 meses
+
+```{r cars81, echo=TRUE, warning=FALSE}
+Box.test(tsEmp, lag = 12, type="Ljung-Box")
+```
+Há evidencias para rejeitar H0 (H0: o conjunto de correlação de ordem 12 é igual zero) ou seja possui memória de mais de 12 meses
+
+
+```{r cars82, echo=TRUE, warning=FALSE}
+Box.test(tsEmp, lag = 24, type="Ljung-Box")
+```
+Há evidencias para rejeitar H0 (H0: o conjunto de correlação de ordem 24 é igual zero) ou seja possui memória de mais de 24 meses
+
+```{r cars83, echo=TRUE, warning=FALSE}
+
+Box.test(tsEmp, lag = 36, type="Ljung-Box")
+```
+Há evidencias para rejeitar H0 (H0: o conjunto de correlação de ordem 36 é igual zero) ou seja possui memória de mais de 36 meses
+
+
+## Inicio da Modelagem
+
+```{r cars71, echo=TRUE, warning=FALSE}
+t = c(1:nEmp)
+
+modelo1 <- lm(tsEmp ~ t)
+summary(modelo1)
+AIC(modelo1)
+```
+
+```{r cars13, echo=TRUE, warning=FALSE}
+plot(modelo1)
+shapiro.test(modelo1$residuals) 
+```
+
+Há evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+```{r cars14, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo1)
+```
+Há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+```{r cars15, echo=TRUE, warning=FALSE}
+acf(modelo1$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - vê-se autocorrelações significantes
+
+## Modelo 2 - Ajuste para Tendencia
+
+```{r cars16, echo=TRUE, warning=FALSE}
+t2=t^2
+modelo2 <- lm(tsEmp ~ t + t2)
+summary(modelo2)
+AIC(modelo2)
+```
+
+
+```{r cars17, echo=TRUE, warning=FALSE}
+plot(modelo2)
+shapiro.test(modelo2$residuals) 
+```
+
+Há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+```{r cars18, echo=TRUE, warning=FALSE}
+acf(modelo2$residuals)
+```
+
+Ratifica-se o valor observado no teste de Durbin-Watson - vê-se autocorrelações significantes
+
+
+## Modelo 3 - Inclusao do componente  de sazonalidade
+
+```{r cars19, echo=TRUE, warning=FALSE}
+sazon1=rep.int(4:12,1)
+sazon2=rep.int(1:12,4)
+sazon3=rep.int(1:8,1)
+sazon = append(sazon1, sazon2)
+sazon = append(sazon, sazon3)
+modelo3 <- lm(tsEmp ~ t + t2 + factor(sazon))
+summary(modelo3)
+AIC(modelo3)
+```
+
+```{r cars20, echo=TRUE, warning=FALSE}
+plot(modelo3)
+shapiro.test(modelo3$residuals) 
+```
+Não ha evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+
+```{r cars21, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo3)
+```
+há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+```{r cars22, echo=TRUE, warning=FALSE}
+acf(modelo3$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - vê-se autocorrelações significantes
+
+## Modelo 4 - Inclusao do termo autoregressivo de ordem 1
+
+```{r cars23, echo=TRUE, warning=FALSE}
+resid_1=rep(0,nEmp) 
+for(i in 2:nEmp)
+  resid_1[i]=modelo3$residuals[i-1]
+modelo4= lm(tsEmp ~ t + t2 + factor(sazon) + resid_1)
+summary(modelo4)
+AIC(modelo4)
+```
+
+```{r cars24, echo=TRUE, warning=FALSE}
+plot(modelo4)
+shapiro.test(modelo4$residuals) 
+```
+Ha evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+
+```{r cars25, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo4)
+```
+Não ha auto-correlacao de ordem 1
+
+```{r cars26, echo=TRUE, warning=FALSE}
+acf(modelo4$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - ve-se autocorrelacoes significantes
+
+## modelo5 - serie Transformada
+
+```{r cars73, echo=TRUE, warning=FALSE}
+lnEmp = log(tsEmp)
+
+modelo5= lm(lnEmp ~ t + t2 + factor(sazon))
+summary(modelo5)
+AIC(modelo5)
+```
+
+```{r cars27, echo=TRUE, warning=FALSE}
+plot(modelo5)
+shapiro.test(modelo5$residuals) 
+```
+Ha evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+```{r cars28, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo5)
+```
+Há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+
+
+```{r cars29, echo=TRUE, warning=FALSE}
+acf(modelo5$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - ve-se autocorrelacoes significantes
+
+
+## Modelo 6 - Termo autoregressivo na serie transformada
+```{r cars130, echo=TRUE, warning=FALSE}
+resid_1=rep(0,nEmp) 
+for(i in 2:nEmp)
+  resid_1[i]=modelo5$residuals[i-1]
+modelo6= lm(lnEmp ~ t + t2 + factor(sazon) + resid_1)
+summary(modelo6)
+AIC(modelo6)
+```
+
+
+
+```{r cars131, echo=TRUE, warning=FALSE}
+plot(modelo6)
+shapiro.test(modelo6$residuals) 
+```
+Não ha evidencias para rejeitar H0 (H0: os residuos sao normalmente distribuidos)
+
+```{r cars132, echo=TRUE, warning=FALSE}
+durbinWatsonTest(modelo6)
+```
+Há evidencias para rejeitar-se H0 - H0: nao ha auto-correlacao de ordem 1
+
+
+```{r cars133, echo=TRUE, warning=FALSE}
+acf(modelo6$residuals)
+```
+Ratifica-se o valor observado no teste de Durbin-Watson - ve-se autocorrelacoes significantes
+
+
+## Ajuste do modelo sem as 9 ultimas observacoes
+
+```{r cars34, echo=TRUE, warning=FALSE}
+real=lnEmp[57:65]
+
+n6=length(lnEmp)-9 
+serie=rep(0,n6)
+for(i in 1:n6)
+  serie[i]=lnEmp[i]
+serie=ts(serie,start=c(1999,04),frequency=12)
+t=c(1:n6)
+t2=t^2
+
+sazon1=rep.int(4:12,1)
+sazon2=rep.int(1:12,3)
+sazon3=rep.int(1:11,1)
+sazon6 = append(sazon1, sazon2)
+sazon6 = append(sazon6, sazon3)
+
+M5=lm(serie ~ t + t2+ factor(sazon6)) 
+resid_m5=rep(0,n6) 
+for(i in 2:n6)
+  resid_m5[i]=M5$res[i-1] 
+M6= lm(serie ~ t + t2 + factor(sazon6) + resid_m5)
+summary(M6)
+```
+## Previsao
+
+
+```{r cars35, echo=TRUE, warning=FALSE}
+
+previsao = rep(1,9) 
+previsao[1] = M6$coef[1] + M6$coef[2]*(n6+1) + M6$coef[3]*(n6+1)^2 + M6$coef[14] + M6$coef[15]*M5$res[n6]
+previsao[2] = M6$coef[1] + M6$coef[2]*(n6+2) + M6$coef[3]*(n6+2)^2 + M6$coef[15]*M5$res[n6]
+
+
+for(i in 3:9)
+  previsao[i] = M6$coef[1] + M6$coef[2]*(n6+i) + M6$coef[3]*(n6+i)^2 + M6$coef[i+1] + (M6$coef[15])^i*M6$res[n6]
+
+
+previsao
+exp(previsao)
+previsao=ts(previsao,start = c(2003,12), frequency = 12)
+plot(exp(previsao))
+real=ts(real,start = c(2003,12), frequency = 12)
+plot(exp(real))
+
+previsao
+real
+```
+## Intervalos de previsao
+
+```{r cars36, echo=TRUE, warning=FALSE}
+li=rep(1,9)
+ls=rep(1,9)
+previsaofinal=rep(1,9)
+p=length(M6$coef)
+
+PHI=1
+for(i in 1:9)
+{
+  li[i]=previsao[i] - qt(0.975,n6-p)*sd(M6$res)*sqrt(PHI)
+  ls[i]=previsao[i] + qt(0.975,n6-p)*sd(M6$res)*sqrt(PHI)
+  PHI=PHI+(M6$coef[15])^2*i
+}
+li
+for(i in 1:9)
+{
+  previsaofinal[i] = exp(previsao[i])
+  li[i]=exp(li[i])
+  ls[i]=exp(ls[i])
+}
+length(previsaofinal)
+length(real)
+vetor_prev = cbind(exp(real),previsaofinal, li, ls)
+vetor_prev
+```
+
+## Calculo do Erro Quadratico Medio de Previsao
+
+```{r cars37, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - previsaofinal[i])^2/9
+SQP
+```
+
+### Tecnica ARIMA(p, q, d)
+
+
+```{r cars38, echo=TRUE, warning=FALSE}
+pp.test(lnEmp)
+```
+Nao tem evidencias para rejeitar a hipotese nula H0 (H0: a série tem raiz unitária, logo é estacionária)
+
+
+```{r cars39, echo=TRUE, warning=FALSE}
+adf.test(lnEmp)
+```
+Rejeita-se a hipÃ³tese nula H0 (H0: a série não é estacionaria)
+
+seguindo o teste Aumentado de Dickey-Fuller, A serie é estacionaria, entao necessita da componente Diferencial do ARIMA.
+
+```{r cars40, echo=TRUE, warning=FALSE}
+pacf(lnEmp)
+```
+observando o pacf, observa-se que ultrapassa-se a banda em ordem 1 - ou seja, sera necessario um componente auto-regressivo 1
+
+```{r cars41, echo=TRUE, warning=FALSE}
+Box.test(lnEmp,lag=1,type="Ljung-Box")
+Box.test(lnEmp,lag=6,type="Ljung-Box")
+Box.test(lnEmp,lag=12,type="Ljung-Box")
+Box.test(lnEmp,lag=24,type="Ljung-Box")
+Box.test(lnEmp,lag=36,type="Ljung-Box")
+
+
+fit1 <- sarima(lnEmp,1,1,1,1,1,1,6)
+fit1
+```
+ma1 nao representativo, demais componentes respeitam as condicoes e sao representativos
+
+
+Mantendo a mesma condicao de sazonalidade e removendo o componente media movel 1 (ma1) do modelo - indicado pelos resultados acima
+
+```{r cars42, echo=TRUE, warning=FALSE}
+fit2 <- sarima(lnEmp,1,1,0,1,1,1,6)
+fit2
+shapiro.test(fit2$fit$residuals)
+```
+Não ha evidencias para rejeitar a hipotese nula de que os residuos sao normalmente distribuidos
+
+
+Observa-se melhora no AIC, aumento dos graus de liberdade e menor complexidade do modelo - este deve ser usado para simulacao
+
+
+## Previsão utilizando melhor modelo 
+
+### Previsão
+
+```{r cars43, echo=TRUE, warning=FALSE}
+serie
+serieSarima <- sarima.for(serie, 9, 1, 1, 0, 1, 1, 1, 6)
+serieSarima$pred
+exp(serieSarima$pred)
+```
+
+###Forecasting MSE
+```{r cars44, echo=TRUE, warning=FALSE}
+for(i in 1:9)
+  SQP=(exp(real[i]) - exp(serieSarima$pred[i]))^2/9
+SQP
+```
+## Tecnica de Alisamento Exponencial
+
+Dado tudo que foi visto ate o momento, pode-se afirmar que a serie contem uma componente de Nivel, de Tendencia e Sazonalidade, logo
+
+```{r cars45, echo=TRUE, warning=FALSE}
+fitHT <- HoltWinters(lnEmp)
+plot(fitted(fitHT))
+plot(fitHT)
+
+fitHT2 <- HoltWinters(serie)
+plot(fitted(fitHT2))
+plot(fitHT2) 
+
+predHT2 = predict(fitHT2,9, prediction.interval = TRUE)
+exp(predHT2)
+exp(real)
+plot(exp(predHT2))
+plot(exp(real))
+
+
+for(i in 1:9)
+  SQP=(exp(real[i]) - exp(predHT2[i,1]))^2/9
+SQP
+```
+## Tecnica de Espaço-Estados 
+
+```{r cars46, echo=TRUE, warning=FALSE}
+lnEmp
+model<-function(u){
+  mod<-dlmModSeas(frequency=12,dV=0,dW=c(exp(u[4]),rep(0,10)))+
+    dlmModPoly(2,dV=exp(u[1]),dW=(exp(u[2:3])))
+}
+outmle=dlmMLE(tsEmp,parm=rep(0,4),model)
+exp(outmle$par)
+mod=model(outmle$par)
+outmodFil=dlmFilter(tsEmp,mod)
+
+outF<-dlmFilter(tsEmp,mod)    
+outS<-dlmSmooth(tsEmp,mod)    
+
+par(mfrow=c(4,1))
+ts.plot((outF$m[10:nEmp,1]))
+title("Sazonality: Filtering")
+ts.plot((outF$m[10:nEmp,12]))
+title("Slope: Filtering")
+ts.plot((outF$m[10:nEmp,13]))
+title("Level: Filtering")
+ts.plot((outF$f[10:nEmp]),ylab="Yt^",xlab="t")
+title("Preditos")
+
+par(mfrow=c(1,1))
+myt=matrix(NA,nEmp,2)
+myt[,1]=tsEmp
+myt[,2]=outF$f[1:nEmp]
+ts.plot(myt,ylab="Yt^",xlab="t",col=c("black","red"))
+```
+Observa-se um descasamento nos preditos em momentos iniciais, depois o modelo ajusta para as observações
+
+```{r cars47, echo=TRUE, warning=FALSE}
+ts.plot((outS$s[10:nEmp,1]))
+title("Sazonality: Smoothing")
+ts.plot((outS$s[10:nEmp,12]))
+title("Slope: Smoothing")
+ts.plot((outS$s[10:nEmp,13]))
+title("Level: Smoothing")
+```
+# Análise dos resíduos
+
+```{r cars48, echo=TRUE, warning=FALSE}
+par(mfrow=c(1,1))
+qqnorm(residuals(outF,sd=FALSE))
+qqline(residuals(outF,sd=FALSE))
+ 
+tsdiag(outF)
+shapiro.test(residuals(outF,sd=FALSE)) 
+```
+
+Ha evidencias para rejeitar H0 (H0: os residuos do modelo são normalmente distribuidos)
+
+## Previsão
+
+```{r cars49, echo=TRUE, warning=FALSE}
+seriePura = exp(serie)
+seriePura
+
+outmle2=dlmMLE(seriePura,parm=rep(0,4),model)
+exp(outmle2$par)
+mod2=model(outmle2$par)
+outmodFil2=dlmFilter(seriePura,mod2)
+
+outF2<-dlmFilter(seriePura,mod2)    
+outS2<-dlmSmooth(seriePura,mod2)    
+
+prev2=dlmForecast(outmodFil2,n=9)
+prev2$f
+previsaoMEB=as.numeric(prev2$f)
+lsMEB=previsaoMEB+1.96*sqrt(as.numeric(prev2$Q[1:9]))
+liMEB=previsaoMEB-1.96*sqrt(as.numeric(prev2$Q[1:9]))
+
+vetorPrevMEB = cbind(exp(real),previsaoMEB, liMEB, lsMEB)
+```
+
+## Forecasting MSE:
+```{r cars50, echo=TRUE, warning=FALSE}
+
+for(i in 1:9)
+  SQP=(exp(real[i]) - previsaoMEB[i])^2/9
+SQP
+```
+A previsão obteve bons resultados com a Media do erro quadratico menor que 1
